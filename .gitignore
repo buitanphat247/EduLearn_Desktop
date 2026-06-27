@@ -1,0 +1,16 @@
+node_modules/
+
+# Rust build output
+rust-core/target/
+
+# Local environment files
+.env
+.env.local
+
+# Logs and caches
+*.log
+.DS_Store
+Thumbs.db
+
+# Temporary helper files
+tmp-*.js

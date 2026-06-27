@@ -1,0 +1,380 @@
+use crate::models::{
+    EvaluationFinding, PrecheckEvaluation, PrecheckReport, PrecheckSnapshot, PreflightDecision,
+    PreflightLogLine, PreflightResult,
+};
+use crate::policy::PrecheckPolicy;
+use crate::rules::run_precheck_rules;
+use std::collections::BTreeSet;
+
+pub fn evaluate_precheck_snapshot(snapshot: &PrecheckSnapshot) -> PrecheckEvaluation {
+    let policy = PrecheckPolicy::for_snapshot(snapshot);
+    let findings = run_precheck_rules(snapshot, &policy);
+    let total_risk_score = findings
+        .iter()
+        .fold(0u32, |accumulator, finding| accumulator.saturating_add(finding.risk_points))
+        .min(100);
+
+    let has_blocking_finding = findings.iter().any(|finding| finding.severity == "block");
+    let status = if has_blocking_finding || total_risk_score >= policy.block_threshold {
+        "block"
+    } else if !findings.is_empty() || total_risk_score >= policy.review_threshold {
+        "review"
+    } else {
+        "ready"
+    };
+
+    let primary_recommendation = match status {
+        "block" => "Resolve blocking findings before starting the exam.".to_string(),
+        "review" => "Review the findings and reduce risk before entering the exam room.".to_string(),
+        _ => "The environment looks acceptable for the current desktop pre-check.".to_string(),
+    };
+
+    let secondary_recommendations = collect_recommendations(&findings);
+
+    PrecheckEvaluation {
+        status: status.to_string(),
+        total_risk_score,
+        primary_recommendation,
+        secondary_recommendations,
+        findings,
+    }
+}
+
+pub fn build_precheck_report(snapshot: PrecheckSnapshot) -> PrecheckReport {
+    let evaluation = evaluate_precheck_snapshot(&snapshot);
+
+    PrecheckReport {
+        collected_at: snapshot.collected_at,
+        snapshot,
+        evaluation,
+    }
+}
+
+pub fn build_preflight_result(snapshot: PrecheckSnapshot) -> PreflightResult {
+    let policy = PrecheckPolicy::for_snapshot(&snapshot);
+    let report = build_precheck_report(snapshot);
+    let decision = build_preflight_decision(&report, &policy);
+    let log_lines = build_preflight_log_lines(&report, &decision);
+
+    PreflightResult {
+        collected_at: report.collected_at,
+        report,
+        decision,
+        log_lines,
+    }
+}
+
+fn collect_recommendations(findings: &[EvaluationFinding]) -> Vec<String> {
+    let mut unique_recommendations = BTreeSet::new();
+    for finding in findings {
+        unique_recommendations.insert(finding.recommendation.clone());
+    }
+
+    unique_recommendations.into_iter().collect()
+}
+
+fn build_preflight_decision(
+    report: &PrecheckReport,
+    policy: &PrecheckPolicy,
+) -> PreflightDecision {
+    let has_blocking_finding = report
+        .evaluation
+        .findings
+        .iter()
+        .any(|finding| finding.severity == "block");
+    let advisory_status = if report.evaluation.status == "ready" {
+        "ready"
+    } else {
+        "review"
+    };
+    let can_enter_exam = true;
+
+    let primary_reason_code = if report.evaluation.status == "ready" {
+        "PREFLIGHT_READY".to_string()
+    } else {
+        report
+            .evaluation
+            .findings
+            .first()
+            .map(|finding| finding.metadata.rule_id.clone())
+            .unwrap_or_else(|| "PREFLIGHT_WARNING_REVIEW".to_string())
+    };
+
+    let primary_reason = if report.evaluation.status == "ready" {
+        "System check passed. The exam room can be opened.".to_string()
+    } else if has_blocking_finding {
+        "Warnings were detected before entering the room. Phase 5 still allows the room to open, but these findings should be resolved before secure session protection is enforced."
+            .to_string()
+    } else {
+        "Warnings were detected before entering the room. You can continue in this phase, but the findings should be reviewed before the protected exam session starts."
+            .to_string()
+    };
+
+    let reason_codes = collect_reason_codes(&report.evaluation.findings);
+    let recommendations = if report.evaluation.secondary_recommendations.is_empty() {
+        vec![primary_reason.clone()]
+    } else {
+        report.evaluation.secondary_recommendations.clone()
+    };
+
+    PreflightDecision {
+        status: advisory_status.to_string(),
+        can_enter_exam,
+        allow_review_continue: policy.allow_continue_on_review,
+        primary_reason,
+        primary_reason_code,
+        reason_codes,
+        policy_version: policy.policy_version.clone(),
+        recommendations,
+    }
+}
+
+fn build_preflight_log_lines(
+    report: &PrecheckReport,
+    decision: &PreflightDecision,
+) -> Vec<PreflightLogLine> {
+    let mut timestamp = report.collected_at.saturating_sub(12_000);
+    let mut lines = Vec::new();
+
+    push_log_line(
+        &mut lines,
+        &mut timestamp,
+        "info",
+        "PREFLIGHT_START",
+        "Starting desktop preflight check.",
+    );
+    push_log_line(
+        &mut lines,
+        &mut timestamp,
+        "info",
+        "SYSTEM_INFO_COLLECTED",
+        format!(
+            "System detected: {} {}",
+            report.snapshot.system_info.os_name, report.snapshot.system_info.os_version
+        ),
+    );
+    push_log_line(
+        &mut lines,
+        &mut timestamp,
+        if report.snapshot.summary.monitor_count > 1 {
+            "warn"
+        } else {
+            "success"
+        },
+        "DISPLAY_SUMMARY",
+        format!(
+            "Display check: {} monitor(s) active.",
+            report.snapshot.summary.monitor_count
+        ),
+    );
+    push_log_line(
+        &mut lines,
+        &mut timestamp,
+        "info",
+        "PROCESS_SUMMARY",
+        format!(
+            "Process scan: {} running process(es), {} browser(s), {} remote app(s), {} capture app(s).",
+            report.snapshot.summary.total_process_count,
+            report.snapshot.summary.browser_app_count,
+            report.snapshot.summary.remote_app_count,
+            report.snapshot.summary.screen_capture_app_count
+        ),
+    );
+
+    for finding in &report.evaluation.findings {
+        let level = match finding.severity.as_str() {
+            "block" => "block",
+            "review" | "warn" => "warn",
+            _ => "info",
+        };
+
+        push_log_line(
+            &mut lines,
+            &mut timestamp,
+            level,
+            finding.metadata.rule_id.to_uppercase(),
+            format!(
+                "{} | risk {} | confidence {}%",
+                finding.summary,
+                finding.risk_points,
+                (finding.confidence * 100.0).round()
+            ),
+        );
+    }
+
+    for recommendation in &decision.recommendations {
+        push_log_line(
+            &mut lines,
+            &mut timestamp,
+            if decision.status == "block" {
+                "block"
+            } else if decision.status == "review" {
+                "warn"
+            } else {
+                "success"
+            },
+            "ACTION_REQUIRED",
+            recommendation.clone(),
+        );
+    }
+
+    push_log_line(
+        &mut lines,
+        &mut timestamp,
+        if report.evaluation.status == "ready" {
+            "success"
+        } else {
+            "warn"
+        },
+        decision.primary_reason_code.to_uppercase(),
+        format!(
+            "Final gate: {} | sourceEvaluation={} | canEnterExam={} | risk {}/100 | policy {}",
+            decision.status.to_uppercase(),
+            report.evaluation.status.to_uppercase(),
+            decision.can_enter_exam,
+            report.evaluation.total_risk_score,
+            decision.policy_version
+        ),
+    );
+
+    lines
+}
+
+fn push_log_line(
+    lines: &mut Vec<PreflightLogLine>,
+    timestamp: &mut u64,
+    level: &str,
+    code: impl Into<String>,
+    message: impl Into<String>,
+) {
+    lines.push(PreflightLogLine {
+        timestamp: *timestamp,
+        level: level.to_string(),
+        code: code.into(),
+        message: message.into(),
+    });
+    *timestamp = timestamp.saturating_add(1_000);
+}
+
+fn collect_reason_codes(findings: &[EvaluationFinding]) -> Vec<String> {
+    let mut unique_codes = BTreeSet::new();
+    for finding in findings {
+        unique_codes.insert(finding.metadata.rule_id.clone());
+    }
+
+    unique_codes.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_preflight_result, evaluate_precheck_snapshot};
+    use crate::models::{
+        DetectionSignal, DisplayInfo, MonitorInfo, PrecheckSnapshot, PrecheckSummary, ProcessCategories, ProcessInfo,
+        SystemInfo,
+    };
+
+    fn base_system_info() -> SystemInfo {
+        SystemInfo {
+            os_name: "Windows".to_string(),
+            os_version: "11".to_string(),
+            kernel_version: "10.0.26100".to_string(),
+            host_name: "test-host".to_string(),
+            architecture: "x86_64".to_string(),
+            cpu_count: 12,
+            total_memory_mb: 16_384,
+            available_memory_mb: 8_192,
+            uptime_seconds: 36_000,
+            user_name: "student".to_string(),
+            system_manufacturer: Some("Test".to_string()),
+            system_product_name: Some("Physical Device".to_string()),
+        }
+    }
+
+    fn base_categories() -> ProcessCategories {
+        ProcessCategories {
+            browser: Vec::new(),
+            communication: Vec::new(),
+            remote_desktop: Vec::new(),
+            screen_capture: Vec::new(),
+            virtual_machine: Vec::new(),
+            debug_tools: Vec::new(),
+        }
+    }
+
+    fn build_snapshot(
+        monitor_count: usize,
+        remote_processes: Vec<ProcessInfo>,
+        vm_signals: Vec<DetectionSignal>,
+    ) -> PrecheckSnapshot {
+        PrecheckSnapshot {
+            collected_at: 1_782_600_500_000,
+            summary: PrecheckSummary {
+                total_process_count: remote_processes.len(),
+                monitor_count,
+                browser_app_count: 0,
+                remote_app_count: remote_processes.len(),
+                screen_capture_app_count: 0,
+                vm_signal_count: vm_signals.len(),
+            },
+            system_info: base_system_info(),
+            display_info: DisplayInfo {
+                monitor_count,
+                monitors: (0..monitor_count)
+                    .map(|index| MonitorInfo {
+                        device_name: format!("DISPLAY{}", index + 1),
+                        width: 1920,
+                        height: 1080,
+                        offset_x: (index as i32) * 1920,
+                        offset_y: 0,
+                        is_primary: index == 0,
+                    })
+                    .collect(),
+            },
+            process_list: remote_processes.clone(),
+            process_categories: ProcessCategories {
+                remote_desktop: remote_processes,
+                ..base_categories()
+            },
+            vm_signals,
+            remote_signals: Vec::new(),
+            screen_capture_signals: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn ready_snapshot_stays_ready_without_findings() {
+        let snapshot = build_snapshot(1, Vec::new(), Vec::new());
+        let evaluation = evaluate_precheck_snapshot(&snapshot);
+
+        assert_eq!(evaluation.status, "ready");
+        assert_eq!(evaluation.total_risk_score, 0);
+        assert!(evaluation.findings.is_empty());
+    }
+
+    #[test]
+    fn blocking_findings_still_build_an_advisory_preflight_gate_in_phase_five() {
+        let snapshot = build_snapshot(
+            3,
+            vec![ProcessInfo {
+                pid: 1234,
+                name: "AnyDesk.exe".to_string(),
+                executable_path: Some("C:\\AnyDesk.exe".to_string()),
+                memory_mb: 32,
+                categories: vec!["remote_desktop".to_string()],
+            }],
+            Vec::new(),
+        );
+
+        let result = build_preflight_result(snapshot);
+
+        assert_eq!(result.report.evaluation.status, "block");
+        assert_eq!(result.report.evaluation.total_risk_score, 100);
+        assert_eq!(result.decision.status, "review");
+        assert!(result.decision.can_enter_exam);
+        assert_eq!(result.decision.primary_reason_code, "process.remote");
+        assert!(result
+            .log_lines
+            .iter()
+            .any(|line| line.code == "PROCESS.REMOTE" || line.code == "PROCESS.REMOTE.1234"));
+    }
+}

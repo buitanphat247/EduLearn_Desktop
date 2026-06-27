@@ -1,0 +1,11 @@
+[package]
+name = "rust-core"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sysinfo = "0.30"
+winreg = "0.52"
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }

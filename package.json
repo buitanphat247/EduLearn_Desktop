@@ -1,0 +1,28 @@
+{
+  "name": "edulearn-desktop",
+  "version": "1.0.0",
+  "description": "Electron shell for EduLearn Next.js client",
+  "main": "src/main.js",
+  "scripts": {
+    "dev": "node scripts/dev.js",
+    "desktop": "node scripts/open-electron.js",
+    "core:build": "cargo build --manifest-path rust-core/Cargo.toml --release",
+    "test": "node --test .\\test\\*.test.js",
+    "test:core": "cargo test --manifest-path rust-core/Cargo.toml",
+    "test:all": "npm run test && npm run test:core"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "electron": "^42.4.0"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.3",
+    "cross-env": "^10.1.0",
+    "dotenv": "^17.2.3",
+    "electronmon": "^2.0.4",
+    "wait-on": "^9.0.10"
+  }
+}
