@@ -2,86 +2,56 @@ use crate::models::{
     DetectionSignal, DisplayInfo, MonitorInfo, PrecheckSnapshot, PrecheckSummary, ProcessCategories,
     ProcessInfo, SystemInfo,
 };
+use crate::process_policy::{
+    categorize_process_name_with_policy, contains_vm_vendor, CATEGORY_BROWSER,
+    CATEGORY_COMMUNICATION, CATEGORY_DEBUG_TOOLS, CATEGORY_POLICY_BLOCKED,
+    CATEGORY_REMOTE_DESKTOP, CATEGORY_SCREEN_CAPTURE, CATEGORY_VIRTUAL_MACHINE,
+};
+use crate::policy_model::ExamPolicy;
 use std::env;
-use sysinfo::System;
+use sysinfo::{ProcessRefreshKind, System, UpdateKind};
 use windows::Win32::Foundation::{BOOL, LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
 };
+use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_REMOTESESSION};
 use winreg::enums::HKEY_LOCAL_MACHINE;
 use winreg::RegKey;
 
-const BROWSER_PATTERNS: &[&str] = &[
-    "chrome.exe",
-    "msedge.exe",
-    "firefox.exe",
-    "opera.exe",
-    "brave.exe",
-    "safari.exe",
-];
-const COMMUNICATION_PATTERNS: &[&str] = &[
-    "discord.exe",
-    "slack.exe",
-    "telegram.exe",
-    "wechat.exe",
-    "zalo.exe",
-    "line.exe",
-    "teams.exe",
-    "zoom.exe",
-];
-const REMOTE_DESKTOP_PATTERNS: &[&str] = &[
-    "mstsc.exe",
-    "rdpclip.exe",
-    "anydesk.exe",
-    "teamviewer.exe",
-    "teamviewer_service.exe",
-    "rustdesk.exe",
-    "vncviewer.exe",
-    "vncserver.exe",
-    "radmin.exe",
-    "parsecd.exe",
-];
-const SCREEN_CAPTURE_PATTERNS: &[&str] = &[
-    "obs64.exe",
-    "obs32.exe",
-    "bdcam.exe",
-    "bandicam.exe",
-    "camtasiastudio.exe",
-    "snagit32.exe",
-    "snagit64.exe",
-    "sharex.exe",
-    "streamlabs.exe",
-    "xsplit.core.exe",
-    "screenrec.exe",
-];
-const VIRTUAL_MACHINE_PATTERNS: &[&str] = &[
-    "vmtoolsd.exe",
-    "vmwaretray.exe",
-    "vmwareuser.exe",
-    "vboxservice.exe",
-    "vboxtray.exe",
-    "prl_tools.exe",
-    "qemu-ga.exe",
-];
-const DEBUG_TOOLS_PATTERNS: &[&str] = &[
-    "processhacker.exe",
-    "procmon.exe",
-    "procexp.exe",
-    "windbg.exe",
-    "x64dbg.exe",
-    "x32dbg.exe",
-    "ollydbg.exe",
-    "ida64.exe",
-    "ida.exe",
-];
 const MONITOR_PRIMARY_FLAG: u32 = 0x0000_0001;
 
-pub fn collect_precheck_snapshot(collected_at: u64) -> PrecheckSnapshot {
+#[derive(Debug)]
+pub struct ProcessCollector {
+    system: System,
+}
+
+impl ProcessCollector {
+    pub fn new() -> Self {
+        Self {
+            system: System::new(),
+        }
+    }
+
+    pub fn collect_with_policy(&mut self, policy: &ExamPolicy) -> Vec<ProcessInfo> {
+        self.system.refresh_processes_specifics(
+            ProcessRefreshKind::new()
+                .with_memory()
+                .with_exe(UpdateKind::OnlyIfNotSet),
+        );
+
+        build_process_list(&self.system, policy)
+    }
+}
+
+pub fn collect_precheck_snapshot_with_policy(
+    collected_at: u64,
+    policy: &ExamPolicy,
+) -> PrecheckSnapshot {
     // Phase 3 only collects native information. No blocking, killing, or policy enforcement
     // should happen here, so the output stays safe to inspect from the UI.
     let system_info = collect_system_info();
     let display_info = collect_display_info();
-    let process_list = collect_process_list();
+    let process_list = ProcessCollector::new().collect_with_policy(policy);
     let process_categories = collect_process_categories_from_processes(&process_list);
     let vm_signals = collect_vm_signals(&system_info, &process_categories);
     let remote_signals = collect_remote_signals(&process_categories);
@@ -177,10 +147,7 @@ pub fn collect_display_info() -> DisplayInfo {
     }
 }
 
-pub fn collect_process_list() -> Vec<ProcessInfo> {
-    let mut system = System::new_all();
-    system.refresh_all();
-
+fn build_process_list(system: &System, policy: &ExamPolicy) -> Vec<ProcessInfo> {
     let mut processes = system
         .processes()
         .values()
@@ -190,8 +157,9 @@ pub fn collect_process_list() -> Vec<ProcessInfo> {
                 pid: process.pid().as_u32(),
                 name: name.clone(),
                 executable_path: process.exe().map(|path| path.display().to_string()),
+                creation_time_ms: Some(process.start_time().saturating_mul(1_000)),
                 memory_mb: bytes_to_mb(process.memory()),
-                categories: categorize_process(&name),
+                categories: categorize_process_name_with_policy(&name, policy),
             }
         })
         .collect::<Vec<_>>();
@@ -202,12 +170,13 @@ pub fn collect_process_list() -> Vec<ProcessInfo> {
 
 pub fn collect_process_categories_from_processes(processes: &[ProcessInfo]) -> ProcessCategories {
     ProcessCategories {
-        browser: filter_process_category(processes, "browser"),
-        communication: filter_process_category(processes, "communication"),
-        remote_desktop: filter_process_category(processes, "remoteDesktop"),
-        screen_capture: filter_process_category(processes, "screenCapture"),
-        virtual_machine: filter_process_category(processes, "virtualMachine"),
-        debug_tools: filter_process_category(processes, "debugTools"),
+        browser: filter_process_category(processes, CATEGORY_BROWSER),
+        communication: filter_process_category(processes, CATEGORY_COMMUNICATION),
+        policy_blocked: filter_process_category(processes, CATEGORY_POLICY_BLOCKED),
+        remote_desktop: filter_process_category(processes, CATEGORY_REMOTE_DESKTOP),
+        screen_capture: filter_process_category(processes, CATEGORY_SCREEN_CAPTURE),
+        virtual_machine: filter_process_category(processes, CATEGORY_VIRTUAL_MACHINE),
+        debug_tools: filter_process_category(processes, CATEGORY_DEBUG_TOOLS),
     }
 }
 
@@ -281,6 +250,16 @@ pub fn collect_remote_signals(process_categories: &ProcessCategories) -> Vec<Det
         }
     }
 
+    if unsafe { GetSystemMetrics(SM_REMOTESESSION) } != 0 {
+        signals.push(DetectionSignal {
+            id: "remote-session-win32".to_string(),
+            label: "Remote desktop session".to_string(),
+            detail: "Win32 SM_REMOTESESSION indicates the current session is remote.".to_string(),
+            severity: "warn".to_string(),
+            source: "win32".to_string(),
+        });
+    }
+
     signals
 }
 
@@ -322,46 +301,6 @@ fn filter_process_category(processes: &[ProcessInfo], category: &str) -> Vec<Pro
         .filter(|process| process.categories.iter().any(|entry| entry == category))
         .cloned()
         .collect()
-}
-
-fn categorize_process(name: &str) -> Vec<String> {
-    let normalized = name.to_lowercase();
-    let mut categories = Vec::new();
-
-    if matches_any_pattern(&normalized, BROWSER_PATTERNS) {
-        categories.push("browser".to_string());
-    }
-    if matches_any_pattern(&normalized, COMMUNICATION_PATTERNS) {
-        categories.push("communication".to_string());
-    }
-    if matches_any_pattern(&normalized, REMOTE_DESKTOP_PATTERNS) {
-        categories.push("remoteDesktop".to_string());
-    }
-    if matches_any_pattern(&normalized, SCREEN_CAPTURE_PATTERNS) {
-        categories.push("screenCapture".to_string());
-    }
-    if matches_any_pattern(&normalized, VIRTUAL_MACHINE_PATTERNS) {
-        categories.push("virtualMachine".to_string());
-    }
-    if matches_any_pattern(&normalized, DEBUG_TOOLS_PATTERNS) {
-        categories.push("debugTools".to_string());
-    }
-
-    categories
-}
-
-fn matches_any_pattern(name: &str, patterns: &[&str]) -> bool {
-    patterns.iter().any(|pattern| name.contains(pattern))
-}
-
-fn contains_vm_vendor(value: &str) -> bool {
-    value.contains("vmware")
-        || value.contains("virtualbox")
-        || value.contains("virtual box")
-        || value.contains("hyper-v")
-        || value.contains("kvm")
-        || value.contains("qemu")
-        || value.contains("parallels")
 }
 
 fn read_registry_string(path: &str, value_name: &str) -> Option<String> {

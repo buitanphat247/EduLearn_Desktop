@@ -1,4 +1,13 @@
 use serde::{Deserialize, Serialize};
+use crate::exam_key::SignedExamReceipt;
+use crate::policy_signature::SignedExamPolicy;
+use crate::process_watcher::{
+    ProcessCreationEvent, ProcessWatcherBatchReport, ProcessWatcherProducerStatus,
+    ProcessWatcherSource,
+};
+use crate::runtime_events::RuntimeEvent;
+use crate::runtime_state_engine::RuntimeStateEngineSnapshot;
+use crate::runtime_telemetry::RuntimeTelemetrySnapshot;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,6 +70,7 @@ pub struct ProcessInfo {
     pub pid: u32,
     pub name: String,
     pub executable_path: Option<String>,
+    pub creation_time_ms: Option<u64>,
     pub memory_mb: u64,
     pub categories: Vec<String>,
 }
@@ -70,6 +80,7 @@ pub struct ProcessInfo {
 pub struct ProcessCategories {
     pub browser: Vec<ProcessInfo>,
     pub communication: Vec<ProcessInfo>,
+    pub policy_blocked: Vec<ProcessInfo>,
     pub remote_desktop: Vec<ProcessInfo>,
     pub screen_capture: Vec<ProcessInfo>,
     pub virtual_machine: Vec<ProcessInfo>,
@@ -182,8 +193,17 @@ pub struct ProtectionStatus {
     pub taskbar_hidden: bool,
     pub keyboard_hook_active: bool,
     pub focus_lock_active: bool,
+    pub input_hook_active: bool,
+    pub mouse_hook_active: bool,
+    pub focus_hook_active: bool,
+    pub clipboard_listener_active: bool,
+    pub overlay_heal_active: bool,
+    pub capture_heal_active: bool,
     pub capture_protection_active: bool,
     pub capture_protection_status: String,
+    pub electron_content_protection_active: bool,
+    pub rust_overlay_capture_protection_active: bool,
+    pub capture_protection_best_effort: bool,
     pub runtime_monitor_active: bool,
     pub active_monitor_count: usize,
     pub black_overlay_count: usize,
@@ -209,12 +229,50 @@ pub struct ProtectionLogLine {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessRemediationAction {
+    pub pid: u32,
+    pub name: String,
+    pub category: String,
+    pub first_detected_at: u64,
+    pub deadline_at: u64,
+    pub action: String,
+    pub status: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessRemediationReport {
+    pub grace_period_ms: u64,
+    pub pending_termination_count: usize,
+    pub terminated_count: usize,
+    pub failed_count: usize,
+    pub actions: Vec<ProcessRemediationAction>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeMonitorSummary {
+    pub total_process_count: usize,
+    pub monitor_count: usize,
+    pub remote_signal_count: usize,
+    pub screen_capture_signal_count: usize,
+    pub vm_signal_count: usize,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartExamSessionPayload {
     pub session_id: String,
     pub exam_id: Option<String>,
     pub room_code: Option<String>,
+    pub window_handle_hex: Option<String>,
+    #[serde(default)]
+    pub exam_key: Option<SignedExamReceipt>,
+    #[serde(default)]
+    pub service_authorization: Option<SignedExamReceipt>,
     #[serde(default = "default_true")]
     pub dry_run: bool,
 }
@@ -230,6 +288,36 @@ pub struct ExitExamSessionPayload {
 #[serde(rename_all = "camelCase")]
 pub struct EnterKioskPayload {
     pub session_id: Option<String>,
+    pub window_handle_hex: Option<String>,
+    #[serde(default)]
+    pub electron_content_protection_active: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeMonitorTickPayload {
+    #[serde(default)]
+    pub window_handle_hex: Option<String>,
+    #[serde(default)]
+    pub electron_content_protection_active: bool,
+    #[serde(default)]
+    pub process_creation_events: Vec<ProcessCreationEvent>,
+    #[serde(default)]
+    pub process_watcher_source: ProcessWatcherSource,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LoadExamPolicyPayload {
+    pub exam_id: String,
+    pub envelope: SignedExamPolicy,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PreflightKillPayload {
+    #[serde(default)]
+    pub service_authorization: Option<SignedExamReceipt>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -263,6 +351,39 @@ pub struct ExitExamSessionResult {
     pub log_lines: Vec<ProtectionLogLine>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeMonitorTickResult {
+    pub collected_at: u64,
+    pub session_state: String,
+    pub summary: RuntimeMonitorSummary,
+    pub process_watcher: ProcessWatcherBatchReport,
+    pub process_watcher_producer: ProcessWatcherProducerStatus,
+    pub runtime_state_engine: RuntimeStateEngineSnapshot,
+    pub runtime_telemetry: RuntimeTelemetrySnapshot,
+    pub runtime_events: Vec<RuntimeEvent>,
+    pub display_info: DisplayInfo,
+    pub remote_signals: Vec<DetectionSignal>,
+    pub screen_capture_signals: Vec<DetectionSignal>,
+    pub vm_signals: Vec<DetectionSignal>,
+    pub process_remediation: ProcessRemediationReport,
+    pub protection_status: ProtectionStatus,
+    pub log_lines: Vec<ProtectionLogLine>,
+}
+
 fn default_true() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RuntimeMonitorTickPayload;
+
+    #[test]
+    fn runtime_tick_payload_accepts_missing_window_handle() {
+        let payload: RuntimeMonitorTickPayload =
+            serde_json::from_str("{}").expect("empty payload should be valid");
+
+        assert!(payload.window_handle_hex.is_none());
+    }
 }

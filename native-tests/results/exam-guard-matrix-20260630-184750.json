@@ -1,0 +1,190 @@
+﻿{
+    "schemaVersion":  1,
+    "collectedAt":  "2026-06-30T11:47:50.6912625Z",
+    "mode":  "non-destructive",
+    "destructiveEnabled":  false,
+    "machine":  {
+                    "dpiScale":  100,
+                    "monitorCount":  1,
+                    "windowsBuild":  "10.0.26200.0",
+                    "windowsProductName":  "Microsoft Windows 11 Pro",
+                    "computerName":  "DESKTOP-7JUFL2S"
+                },
+    "appProbes":  [
+                      {
+                          "observed":  false,
+                          "name":  "OBS",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "Discord",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "Zoom",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "Teams",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  true,
+                          "name":  "AnyDesk",
+                          "runningPids":  [
+                                              4988,
+                                              18576
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "TeamViewer",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "UltraViewer",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "RDP",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "Lightshot",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "Greenshot",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "VMware",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "VirtualBox",
+                          "runningPids":  [
+
+                                          ]
+                      }
+                  ],
+    "faultInjectionEnabled":  false,
+    "faultScenarios":  [
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "kill-electron"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "kill-rust-core"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "kill-service"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "close-stdin"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "kill-explorer"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "uac-prompt"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "crash-during-kiosk"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "crash-during-restore"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "sleep-during-kiosk"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "power-interruption-simulated"
+                           }
+                       ],
+    "evidenceRequirements":  [
+                                 "runner-log",
+                                 "machine-info",
+                                 "dpi-info",
+                                 "monitor-info",
+                                 "runtime-snapshot",
+                                 "policy-snapshot",
+                                 "receiver-capture",
+                                 "local-screen",
+                                 "process-remediation-log",
+                                 "restore-state-before",
+                                 "restore-state-after"
+                             ],
+    "notes":  [
+                  "This runner records environment and evidence slots.",
+                  "Capture receiver output and destructive fault injection require an isolated Windows VM."
+              ]
+}

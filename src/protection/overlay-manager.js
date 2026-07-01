@@ -30,6 +30,16 @@ function toDisplayKey(display) {
 function createOverlayManager({ BrowserWindow }) {
   const overlayHtml = createOverlayMarkup();
   const overlayWindows = new Map();
+  const internallyDestroyedWindows = new WeakSet();
+
+  function destroyOverlayWindow(overlayWindow) {
+    if (!overlayWindow || overlayWindow.isDestroyed()) {
+      return;
+    }
+
+    internallyDestroyedWindows.add(overlayWindow);
+    overlayWindow.destroy();
+  }
 
   function createOverlayWindow(display) {
     const overlayWindow = new BrowserWindow({
@@ -68,6 +78,11 @@ function createOverlayManager({ BrowserWindow }) {
     // cannot keep dragging or clicking windows hidden behind the black layer.
     overlayWindow.setIgnoreMouseEvents(false);
     overlayWindow.setContentProtection(true);
+    overlayWindow.on?.("close", (event) => {
+      if (!internallyDestroyedWindows.has(overlayWindow)) {
+        event.preventDefault();
+      }
+    });
     overlayWindow.setBounds(display.bounds, false);
     void overlayWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(overlayHtml)}`);
     overlayWindow.once("ready-to-show", () => {
@@ -91,9 +106,7 @@ function createOverlayManager({ BrowserWindow }) {
         continue;
       }
 
-      if (!overlayWindow.isDestroyed()) {
-        overlayWindow.destroy();
-      }
+      destroyOverlayWindow(overlayWindow);
       overlayWindows.delete(displayKey);
     }
 
@@ -115,9 +128,7 @@ function createOverlayManager({ BrowserWindow }) {
 
   function destroyAll() {
     for (const overlayWindow of overlayWindows.values()) {
-      if (!overlayWindow.isDestroyed()) {
-        overlayWindow.destroy();
-      }
+      destroyOverlayWindow(overlayWindow);
     }
     overlayWindows.clear();
   }

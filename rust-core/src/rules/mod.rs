@@ -1,5 +1,6 @@
 mod debug_tools_rule;
 mod monitor_rule;
+mod policy_blocked_rule;
 mod remote_rule;
 mod screen_capture_rule;
 mod vm_rule;
@@ -17,6 +18,7 @@ pub fn run_precheck_rules(
 ) -> Vec<EvaluationFinding> {
     let rules: Vec<Box<dyn PrecheckRule>> = vec![
         Box::new(monitor_rule::MonitorCountRule),
+        Box::new(policy_blocked_rule::PolicyBlockedProcessRule),
         Box::new(remote_rule::RemoteSessionRule),
         Box::new(screen_capture_rule::ScreenCaptureRule),
         Box::new(debug_tools_rule::DebugToolsRule),

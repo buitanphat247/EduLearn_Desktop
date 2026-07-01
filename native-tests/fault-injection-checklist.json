@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 2,
+  "mode": "destructive-vm-only",
+  "scenarios": [
+    "electron-crash",
+    "rust-core-crash",
+    "bootstrapper-crash",
+    "watchdog-crash",
+    "service-crash",
+    "overlay-destroy",
+    "explorer-restart",
+    "dwm-restart",
+    "clipboard-busy",
+    "clipboard-failure",
+    "hook-failure",
+    "guard-thread-exit",
+    "late-runtime-tick-after-restore",
+    "display-sync-after-restore",
+    "process-pid-reuse",
+    "process-churn-debounce-bound",
+    "named-pipe-disconnect",
+    "named-pipe-failure",
+    "named-pipe-accept-cancellation",
+    "service-client-response-timeout",
+    "heartbeat-timeout",
+    "desktop-destroy",
+    "desktop-switch-failure",
+    "crash-during-restore",
+    "recovery-interruption",
+    "unexpected-shutdown",
+    "sleep",
+    "resume",
+    "lock",
+    "unlock"
+  ],
+  "requiredOutcome": [
+    "recover",
+    "rollback",
+    "restore",
+    "audit-log",
+    "telemetry"
+  ],
+  "requiredArtifacts": [
+    "before-state",
+    "fault-command",
+    "after-state",
+    "audit-log",
+    "runtime-snapshot",
+    "desktop-telemetry",
+    "restore-proof",
+    "timeline"
+  ],
+  "safety": {
+    "requiresDisposableVm": true,
+    "requiresOutOfBandRecoveryAccess": true,
+    "mustNotRunOnDeveloperHost": true
+  }
+}

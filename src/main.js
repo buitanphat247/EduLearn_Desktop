@@ -4,7 +4,14 @@ const { handleDeepLink, registerProtocol } = require("./deeplink");
 const { registerDesktopOAuthIpc, registerDesktopCoreIpc } = require("./ipc");
 const { createDesktopCoreRuntime } = require("./core-runtime");
 const { createDesktopProtectionController } = require("./protection-controller");
-const { DESKTOP_CORE_CHANNELS } = require("../../shared/contracts/safe-exam");
+const { DESKTOP_CORE_CHANNELS } = require("./contracts/safe-exam");
+const { createWatchdogHeartbeat } = require("./watchdog-heartbeat");
+
+// Electron is usually DPI-aware on Windows, but this makes the intent explicit
+// for the exam shell before any BrowserWindow is created.
+if (process.platform === "win32") {
+  app.commandLine.appendSwitch("high-dpi-support", "1");
+}
 
 let mainWindow = null;
 let pendingDeepLink = null;
@@ -17,6 +24,9 @@ const protectionController = createDesktopProtectionController({
 const desktopCoreRuntime = createDesktopCoreRuntime({
   platform: process.platform,
   protectionController,
+});
+const watchdogHeartbeat = createWatchdogHeartbeat({
+  getRuntimeSnapshot: () => desktopCoreRuntime.getSnapshot(),
 });
 // Keep exactly one desktop shell alive so OAuth/deep-link callbacks always
 // return to the existing app window instead of spawning a second shell.
@@ -113,6 +123,7 @@ function registerDevRestoreShortcut() {
 }
 
 app.whenReady().then(() => {
+  watchdogHeartbeat.start();
   registerDesktopOAuthIpc({
     getPendingDeepLink,
     clearPendingDeepLink,
@@ -157,6 +168,7 @@ app.whenReady().then(() => {
       .then(async () => {
         globalShortcut.unregisterAll();
         await desktopCoreRuntime.stop();
+        watchdogHeartbeat.stop();
       })
       .catch((error) => {
         console.error("[desktop] Failed to stop Rust sidecar cleanly", error);

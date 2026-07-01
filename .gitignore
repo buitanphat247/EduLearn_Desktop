@@ -1,7 +1,7 @@
 node_modules/
 
 # Rust build output
-rust-core/target/
+**/target/
 
 # Local environment files
 .env

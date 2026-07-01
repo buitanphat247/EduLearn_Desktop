@@ -1,0 +1,155 @@
+{
+  "schemaVersion": 2,
+  "requiredTopLevelFields": [
+    "scenarioId",
+    "category",
+    "classification",
+    "startedAt",
+    "completedAt",
+    "timestamp",
+    "version",
+    "commitHash",
+    "machineInfo",
+    "windowsVersion",
+    "windowsBuild",
+    "architecture",
+    "dpiInfo",
+    "dpiScale",
+    "monitorInfo",
+    "displayScenario",
+    "captureAndRemoteApp",
+    "captureMode",
+    "runtimeSnapshot",
+    "policySnapshot",
+    "localScreenshot",
+    "receiverCaptureEvidence",
+    "processRemediationLog",
+    "runtimeMetrics",
+    "performanceMetrics",
+    "desktopTelemetry",
+    "faultInjectionLog",
+    "restoreStateBefore",
+    "restoreStateAfter",
+    "acceptanceDecision",
+    "knownLimitations",
+    "result",
+    "failureReason",
+    "evidence"
+  ],
+  "allowedResults": ["pass", "fail", "blocked", "not-tested"],
+  "allowedClassifications": [
+    "Blocked",
+    "Best Effort",
+    "Unsupported",
+    "Bypass Possible"
+  ],
+  "validationVerdicts": ["PASS", "PASS WITH LIMITATIONS", "FAIL", "NOT TESTED"],
+  "requiredEvidence": [
+    "runner-log",
+    "machine-info",
+    "dpi-info",
+    "monitor-info",
+    "runtime-snapshot",
+    "policy-snapshot",
+    "receiver-capture",
+    "recording",
+    "local-screen",
+    "process-remediation-log",
+    "runtime-metrics",
+    "performance-metrics",
+    "desktop-telemetry",
+    "fault-injection-log",
+    "restore-state-before",
+    "restore-state-after",
+    "acceptance-decision"
+  ],
+  "acceptanceFields": {
+    "receiver-capture": [
+      "blackFrameObserved",
+      "toolName",
+      "captureMode",
+      "artifactPath",
+      "expectedResult",
+      "observedResult"
+    ],
+    "recording": [
+      "artifactPath",
+      "toolName",
+      "expectedResult",
+      "observedResult"
+    ],
+    "runtime-snapshot": [
+      "sessionState",
+      "captureProtectionBestEffort",
+      "guardHealth"
+    ],
+    "runtime-metrics": [
+      "runtimeTickP95Ms",
+      "watcherLatencyP95Ms",
+      "detectionLatencyP95Ms",
+      "remediationLatencyP95Ms",
+      "guardRestartP95Ms",
+      "overlayRecoveryP95Ms",
+      "desktopRestoreP95Ms",
+      "heartbeatDelayP95Ms",
+      "maximumTickJitterMs",
+      "etwCallbackP95Micros",
+      "etwQueueDelayP95Ms",
+      "etwEventsLost",
+      "etwBuffersLost",
+      "etwRealTimeBuffersLost",
+      "etwProducerRestartCount"
+    ],
+    "performance-metrics": [
+      "durationMinutes",
+      "cpuPercentAverage",
+      "memoryGrowthMbPerHour",
+      "handleGrowthPerHour",
+      "threadGrowthPerHour"
+    ],
+    "desktop-telemetry": [
+      "desktopCreated",
+      "desktopDestroyed",
+      "desktopRestored",
+      "desktopRestoreLatencyMs",
+      "desktopHealth"
+    ],
+    "fault-injection-log": [
+      "faultScenario",
+      "faultInjected",
+      "recoveryObserved",
+      "artifactPath"
+    ],
+    "restore-state-before": [
+      "desktopName",
+      "cursorClipped",
+      "taskbarHidden"
+    ],
+    "restore-state-after": [
+      "desktopRestored",
+      "cursorUnclipped",
+      "taskbarRestored"
+    ],
+    "acceptance-decision": [
+      "expected",
+      "actual",
+      "verdict",
+      "reproduction"
+    ]
+  },
+  "requiredReports": [
+    "evidence-summary",
+    "matrix-summary",
+    "coverage-report",
+    "capture-validation-report",
+    "receiver-validation-report",
+    "runtime-validation-report",
+    "recovery-validation-report",
+    "service-validation-report",
+    "etw-producer-validation-report",
+    "desktop-validation-report",
+    "performance-report",
+    "benchmark-report",
+    "release-bundle-summary"
+  ]
+}

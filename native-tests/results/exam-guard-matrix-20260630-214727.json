@@ -1,0 +1,1983 @@
+﻿{
+    "schemaVersion":  2,
+    "artifactType":  "native-matrix-run-manifest",
+    "runId":  "exam-guard-matrix-20260630-214727",
+    "version":  "1.0.0",
+    "commitHash":  "unknown",
+    "startedAt":  "2026-06-30T14:47:27.4374470Z",
+    "completedAt":  "2026-06-30T14:47:27.9465411Z",
+    "collectedAt":  "2026-06-30T14:47:27.4374470Z",
+    "mode":  "non-destructive",
+    "destructiveEnabled":  false,
+    "machine":  {
+                    "architecture":  "X64",
+                    "monitorCount":  3,
+                    "dpiScale":  100,
+                    "computerName":  "DESKTOP-7JUFL2S",
+                    "windowsBuild":  "10.0.26200.0",
+                    "windowsProductName":  "Microsoft Windows 11 Pro"
+                },
+    "appProbes":  [
+                      {
+                          "observed":  false,
+                          "name":  "OBS",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "Discord",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "Zoom",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "Teams",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  true,
+                          "name":  "Google Meet",
+                          "runningPids":  [
+                                              14012,
+                                              15048,
+                                              16464,
+                                              16484,
+                                              16648,
+                                              16664,
+                                              16808,
+                                              19788,
+                                              21244,
+                                              21564,
+                                              22096,
+                                              23320,
+                                              23796,
+                                              24084,
+                                              24468,
+                                              27960,
+                                              28252,
+                                              28496,
+                                              1132,
+                                              1788,
+                                              7360,
+                                              13176,
+                                              14852,
+                                              15040,
+                                              15604,
+                                              16136,
+                                              16324,
+                                              16356,
+                                              17176,
+                                              20120,
+                                              20304,
+                                              21092,
+                                              21444,
+                                              21452,
+                                              21976,
+                                              22332,
+                                              23632,
+                                              24240,
+                                              24324,
+                                              24364,
+                                              24388,
+                                              24972,
+                                              25296,
+                                              25436,
+                                              25624,
+                                              25636,
+                                              26360
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "Webex",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "Skype",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  true,
+                          "name":  "AnyDesk",
+                          "runningPids":  [
+                                              4988,
+                                              18576
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "TeamViewer",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "UltraViewer",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "RustDesk",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "RDP",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "Quick Assist",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "Windows Snipping Tool",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "Win+Shift+S",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "Lightshot",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "Greenshot",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "ShareX",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "Game Bar",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "Xbox Capture",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "VMware",
+                          "runningPids":  [
+
+                                          ]
+                      },
+                      {
+                          "observed":  false,
+                          "name":  "VirtualBox",
+                          "runningPids":  [
+
+                                          ]
+                      }
+                  ],
+    "matrixCoverage":  {
+                           "windowsBuilds":  [
+                                                 "22H2",
+                                                 "23H2",
+                                                 "24H2"
+                                             ],
+                           "dpiScales":  [
+                                             100,
+                                             125,
+                                             150,
+                                             175
+                                         ],
+                           "captureAndRemoteApps":  [
+                                                        "OBS",
+                                                        "Discord",
+                                                        "Zoom",
+                                                        "Teams",
+                                                        "Google Meet",
+                                                        "Webex",
+                                                        "Skype",
+                                                        "AnyDesk",
+                                                        "TeamViewer",
+                                                        "UltraViewer",
+                                                        "RustDesk",
+                                                        "RDP",
+                                                        "Quick Assist",
+                                                        "Windows Snipping Tool",
+                                                        "Win+Shift+S",
+                                                        "Lightshot",
+                                                        "Greenshot",
+                                                        "ShareX",
+                                                        "Game Bar",
+                                                        "Xbox Capture",
+                                                        "VMware",
+                                                        "VirtualBox"
+                                                    ],
+                           "captureModes":  [
+                                                "window-capture",
+                                                "display-capture",
+                                                "game-capture",
+                                                "remote-receiver",
+                                                "recording",
+                                                "stream"
+                                            ],
+                           "displayScenarios":  [
+                                                    "single-monitor",
+                                                    "dual-monitor",
+                                                    "triple-monitor",
+                                                    "hot-plug",
+                                                    "resolution-change",
+                                                    "orientation-change",
+                                                    "sleep-resume",
+                                                    "hibernate-resume",
+                                                    "lock-unlock",
+                                                    "fast-user-switching",
+                                                    "rdp-attach",
+                                                    "rdp-detach",
+                                                    "uac-prompt",
+                                                    "explorer-restart",
+                                                    "dwm-restart",
+                                                    "dock",
+                                                    "undock"
+                                                ],
+                           "windowsVersions":  [
+                                                   "Windows 10",
+                                                   "Windows 11"
+                                               ],
+                           "stressScenarios":  [
+                                                   "repeated-exam-start",
+                                                   "repeated-restore",
+                                                   "rapid-monitor-hotplug",
+                                                   "rapid-dpi-change",
+                                                   "repeated-clipboard-access",
+                                                   "rapid-focus-changes",
+                                                   "massive-process-creation",
+                                                   "policy-reload",
+                                                   "thousands-runtime-events"
+                                               ],
+                           "soakDurationsMinutes":  [
+                                                        30,
+                                                        60,
+                                                        120,
+                                                        240,
+                                                        480
+                                                    ],
+                           "architectures":  [
+                                                 "x64",
+                                                 "ARM64"
+                                             ],
+                           "monitorTopologies":  [
+                                                     "single-monitor",
+                                                     "dual-monitor",
+                                                     "triple-monitor"
+                                                 ]
+                       },
+    "captureScenarios":  [
+                             {
+                                 "id":  "capture-OBS-window-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "OBS",
+                                 "classification":  "Best Effort",
+                                 "mode":  "window-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-OBS-display-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "OBS",
+                                 "classification":  "Best Effort",
+                                 "mode":  "display-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-OBS-game-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "OBS",
+                                 "classification":  "Best Effort",
+                                 "mode":  "game-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-OBS-remote-receiver",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "OBS",
+                                 "classification":  "Best Effort",
+                                 "mode":  "remote-receiver",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-OBS-recording",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "OBS",
+                                 "classification":  "Best Effort",
+                                 "mode":  "recording",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-OBS-stream",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "OBS",
+                                 "classification":  "Best Effort",
+                                 "mode":  "stream",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Discord-window-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Discord",
+                                 "classification":  "Best Effort",
+                                 "mode":  "window-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Discord-display-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Discord",
+                                 "classification":  "Best Effort",
+                                 "mode":  "display-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Discord-game-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Discord",
+                                 "classification":  "Best Effort",
+                                 "mode":  "game-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Discord-remote-receiver",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Discord",
+                                 "classification":  "Best Effort",
+                                 "mode":  "remote-receiver",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Discord-recording",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Discord",
+                                 "classification":  "Best Effort",
+                                 "mode":  "recording",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Discord-stream",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Discord",
+                                 "classification":  "Best Effort",
+                                 "mode":  "stream",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Zoom-window-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Zoom",
+                                 "classification":  "Best Effort",
+                                 "mode":  "window-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Zoom-display-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Zoom",
+                                 "classification":  "Best Effort",
+                                 "mode":  "display-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Zoom-game-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Zoom",
+                                 "classification":  "Best Effort",
+                                 "mode":  "game-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Zoom-remote-receiver",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Zoom",
+                                 "classification":  "Best Effort",
+                                 "mode":  "remote-receiver",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Zoom-recording",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Zoom",
+                                 "classification":  "Best Effort",
+                                 "mode":  "recording",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Zoom-stream",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Zoom",
+                                 "classification":  "Best Effort",
+                                 "mode":  "stream",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Teams-window-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Teams",
+                                 "classification":  "Best Effort",
+                                 "mode":  "window-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Teams-display-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Teams",
+                                 "classification":  "Best Effort",
+                                 "mode":  "display-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Teams-game-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Teams",
+                                 "classification":  "Best Effort",
+                                 "mode":  "game-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Teams-remote-receiver",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Teams",
+                                 "classification":  "Best Effort",
+                                 "mode":  "remote-receiver",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Teams-recording",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Teams",
+                                 "classification":  "Best Effort",
+                                 "mode":  "recording",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Teams-stream",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Teams",
+                                 "classification":  "Best Effort",
+                                 "mode":  "stream",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Google-Meet-window-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Google Meet",
+                                 "classification":  "Best Effort",
+                                 "mode":  "window-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Google-Meet-display-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Google Meet",
+                                 "classification":  "Best Effort",
+                                 "mode":  "display-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Google-Meet-game-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Google Meet",
+                                 "classification":  "Best Effort",
+                                 "mode":  "game-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Google-Meet-remote-receiver",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Google Meet",
+                                 "classification":  "Best Effort",
+                                 "mode":  "remote-receiver",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Google-Meet-recording",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Google Meet",
+                                 "classification":  "Best Effort",
+                                 "mode":  "recording",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Google-Meet-stream",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Google Meet",
+                                 "classification":  "Best Effort",
+                                 "mode":  "stream",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Webex-window-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Webex",
+                                 "classification":  "Best Effort",
+                                 "mode":  "window-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Webex-display-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Webex",
+                                 "classification":  "Best Effort",
+                                 "mode":  "display-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Webex-game-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Webex",
+                                 "classification":  "Best Effort",
+                                 "mode":  "game-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Webex-remote-receiver",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Webex",
+                                 "classification":  "Best Effort",
+                                 "mode":  "remote-receiver",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Webex-recording",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Webex",
+                                 "classification":  "Best Effort",
+                                 "mode":  "recording",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Webex-stream",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Webex",
+                                 "classification":  "Best Effort",
+                                 "mode":  "stream",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Skype-window-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Skype",
+                                 "classification":  "Best Effort",
+                                 "mode":  "window-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Skype-display-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Skype",
+                                 "classification":  "Best Effort",
+                                 "mode":  "display-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Skype-game-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Skype",
+                                 "classification":  "Best Effort",
+                                 "mode":  "game-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Skype-remote-receiver",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Skype",
+                                 "classification":  "Best Effort",
+                                 "mode":  "remote-receiver",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Skype-recording",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Skype",
+                                 "classification":  "Best Effort",
+                                 "mode":  "recording",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Skype-stream",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Skype",
+                                 "classification":  "Best Effort",
+                                 "mode":  "stream",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-AnyDesk-window-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "AnyDesk",
+                                 "classification":  "Best Effort",
+                                 "mode":  "window-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-AnyDesk-display-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "AnyDesk",
+                                 "classification":  "Best Effort",
+                                 "mode":  "display-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-AnyDesk-game-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "AnyDesk",
+                                 "classification":  "Best Effort",
+                                 "mode":  "game-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-AnyDesk-remote-receiver",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "AnyDesk",
+                                 "classification":  "Best Effort",
+                                 "mode":  "remote-receiver",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-AnyDesk-recording",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "AnyDesk",
+                                 "classification":  "Best Effort",
+                                 "mode":  "recording",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-AnyDesk-stream",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "AnyDesk",
+                                 "classification":  "Best Effort",
+                                 "mode":  "stream",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-TeamViewer-window-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "TeamViewer",
+                                 "classification":  "Best Effort",
+                                 "mode":  "window-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-TeamViewer-display-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "TeamViewer",
+                                 "classification":  "Best Effort",
+                                 "mode":  "display-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-TeamViewer-game-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "TeamViewer",
+                                 "classification":  "Best Effort",
+                                 "mode":  "game-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-TeamViewer-remote-receiver",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "TeamViewer",
+                                 "classification":  "Best Effort",
+                                 "mode":  "remote-receiver",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-TeamViewer-recording",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "TeamViewer",
+                                 "classification":  "Best Effort",
+                                 "mode":  "recording",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-TeamViewer-stream",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "TeamViewer",
+                                 "classification":  "Best Effort",
+                                 "mode":  "stream",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-UltraViewer-window-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "UltraViewer",
+                                 "classification":  "Best Effort",
+                                 "mode":  "window-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-UltraViewer-display-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "UltraViewer",
+                                 "classification":  "Best Effort",
+                                 "mode":  "display-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-UltraViewer-game-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "UltraViewer",
+                                 "classification":  "Best Effort",
+                                 "mode":  "game-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-UltraViewer-remote-receiver",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "UltraViewer",
+                                 "classification":  "Best Effort",
+                                 "mode":  "remote-receiver",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-UltraViewer-recording",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "UltraViewer",
+                                 "classification":  "Best Effort",
+                                 "mode":  "recording",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-UltraViewer-stream",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "UltraViewer",
+                                 "classification":  "Best Effort",
+                                 "mode":  "stream",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-RustDesk-window-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "RustDesk",
+                                 "classification":  "Best Effort",
+                                 "mode":  "window-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-RustDesk-display-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "RustDesk",
+                                 "classification":  "Best Effort",
+                                 "mode":  "display-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-RustDesk-game-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "RustDesk",
+                                 "classification":  "Best Effort",
+                                 "mode":  "game-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-RustDesk-remote-receiver",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "RustDesk",
+                                 "classification":  "Best Effort",
+                                 "mode":  "remote-receiver",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-RustDesk-recording",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "RustDesk",
+                                 "classification":  "Best Effort",
+                                 "mode":  "recording",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-RustDesk-stream",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "RustDesk",
+                                 "classification":  "Best Effort",
+                                 "mode":  "stream",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-RDP-window-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "RDP",
+                                 "classification":  "Best Effort",
+                                 "mode":  "window-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-RDP-display-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "RDP",
+                                 "classification":  "Best Effort",
+                                 "mode":  "display-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-RDP-game-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "RDP",
+                                 "classification":  "Best Effort",
+                                 "mode":  "game-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-RDP-remote-receiver",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "RDP",
+                                 "classification":  "Best Effort",
+                                 "mode":  "remote-receiver",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-RDP-recording",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "RDP",
+                                 "classification":  "Best Effort",
+                                 "mode":  "recording",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-RDP-stream",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "RDP",
+                                 "classification":  "Best Effort",
+                                 "mode":  "stream",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Quick-Assist-window-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Quick Assist",
+                                 "classification":  "Best Effort",
+                                 "mode":  "window-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Quick-Assist-display-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Quick Assist",
+                                 "classification":  "Best Effort",
+                                 "mode":  "display-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Quick-Assist-game-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Quick Assist",
+                                 "classification":  "Best Effort",
+                                 "mode":  "game-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Quick-Assist-remote-receiver",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Quick Assist",
+                                 "classification":  "Best Effort",
+                                 "mode":  "remote-receiver",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Quick-Assist-recording",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Quick Assist",
+                                 "classification":  "Best Effort",
+                                 "mode":  "recording",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Quick-Assist-stream",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Quick Assist",
+                                 "classification":  "Best Effort",
+                                 "mode":  "stream",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Windows-Snipping-Tool-window-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Windows Snipping Tool",
+                                 "classification":  "Best Effort",
+                                 "mode":  "window-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Windows-Snipping-Tool-display-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Windows Snipping Tool",
+                                 "classification":  "Best Effort",
+                                 "mode":  "display-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Windows-Snipping-Tool-game-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Windows Snipping Tool",
+                                 "classification":  "Best Effort",
+                                 "mode":  "game-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Windows-Snipping-Tool-remote-receiver",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Windows Snipping Tool",
+                                 "classification":  "Best Effort",
+                                 "mode":  "remote-receiver",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Windows-Snipping-Tool-recording",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Windows Snipping Tool",
+                                 "classification":  "Best Effort",
+                                 "mode":  "recording",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Windows-Snipping-Tool-stream",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Windows Snipping Tool",
+                                 "classification":  "Best Effort",
+                                 "mode":  "stream",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Win-Shift-S-window-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Win+Shift+S",
+                                 "classification":  "Best Effort",
+                                 "mode":  "window-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Win-Shift-S-display-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Win+Shift+S",
+                                 "classification":  "Best Effort",
+                                 "mode":  "display-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Win-Shift-S-game-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Win+Shift+S",
+                                 "classification":  "Best Effort",
+                                 "mode":  "game-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Win-Shift-S-remote-receiver",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Win+Shift+S",
+                                 "classification":  "Best Effort",
+                                 "mode":  "remote-receiver",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Win-Shift-S-recording",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Win+Shift+S",
+                                 "classification":  "Best Effort",
+                                 "mode":  "recording",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Win-Shift-S-stream",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Win+Shift+S",
+                                 "classification":  "Best Effort",
+                                 "mode":  "stream",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Lightshot-window-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Lightshot",
+                                 "classification":  "Best Effort",
+                                 "mode":  "window-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Lightshot-display-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Lightshot",
+                                 "classification":  "Best Effort",
+                                 "mode":  "display-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Lightshot-game-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Lightshot",
+                                 "classification":  "Best Effort",
+                                 "mode":  "game-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Lightshot-remote-receiver",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Lightshot",
+                                 "classification":  "Best Effort",
+                                 "mode":  "remote-receiver",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Lightshot-recording",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Lightshot",
+                                 "classification":  "Best Effort",
+                                 "mode":  "recording",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Lightshot-stream",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Lightshot",
+                                 "classification":  "Best Effort",
+                                 "mode":  "stream",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Greenshot-window-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Greenshot",
+                                 "classification":  "Best Effort",
+                                 "mode":  "window-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Greenshot-display-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Greenshot",
+                                 "classification":  "Best Effort",
+                                 "mode":  "display-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Greenshot-game-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Greenshot",
+                                 "classification":  "Best Effort",
+                                 "mode":  "game-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Greenshot-remote-receiver",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Greenshot",
+                                 "classification":  "Best Effort",
+                                 "mode":  "remote-receiver",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Greenshot-recording",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Greenshot",
+                                 "classification":  "Best Effort",
+                                 "mode":  "recording",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Greenshot-stream",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Greenshot",
+                                 "classification":  "Best Effort",
+                                 "mode":  "stream",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-ShareX-window-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "ShareX",
+                                 "classification":  "Best Effort",
+                                 "mode":  "window-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-ShareX-display-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "ShareX",
+                                 "classification":  "Best Effort",
+                                 "mode":  "display-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-ShareX-game-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "ShareX",
+                                 "classification":  "Best Effort",
+                                 "mode":  "game-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-ShareX-remote-receiver",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "ShareX",
+                                 "classification":  "Best Effort",
+                                 "mode":  "remote-receiver",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-ShareX-recording",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "ShareX",
+                                 "classification":  "Best Effort",
+                                 "mode":  "recording",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-ShareX-stream",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "ShareX",
+                                 "classification":  "Best Effort",
+                                 "mode":  "stream",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Game-Bar-window-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Game Bar",
+                                 "classification":  "Best Effort",
+                                 "mode":  "window-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Game-Bar-display-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Game Bar",
+                                 "classification":  "Best Effort",
+                                 "mode":  "display-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Game-Bar-game-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Game Bar",
+                                 "classification":  "Best Effort",
+                                 "mode":  "game-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Game-Bar-remote-receiver",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Game Bar",
+                                 "classification":  "Best Effort",
+                                 "mode":  "remote-receiver",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Game-Bar-recording",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Game Bar",
+                                 "classification":  "Best Effort",
+                                 "mode":  "recording",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Game-Bar-stream",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Game Bar",
+                                 "classification":  "Best Effort",
+                                 "mode":  "stream",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Xbox-Capture-window-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Xbox Capture",
+                                 "classification":  "Best Effort",
+                                 "mode":  "window-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Xbox-Capture-display-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Xbox Capture",
+                                 "classification":  "Best Effort",
+                                 "mode":  "display-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Xbox-Capture-game-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Xbox Capture",
+                                 "classification":  "Best Effort",
+                                 "mode":  "game-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Xbox-Capture-remote-receiver",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Xbox Capture",
+                                 "classification":  "Best Effort",
+                                 "mode":  "remote-receiver",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Xbox-Capture-recording",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Xbox Capture",
+                                 "classification":  "Best Effort",
+                                 "mode":  "recording",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-Xbox-Capture-stream",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "Xbox Capture",
+                                 "classification":  "Best Effort",
+                                 "mode":  "stream",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-VMware-window-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "VMware",
+                                 "classification":  "Best Effort",
+                                 "mode":  "window-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-VMware-display-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "VMware",
+                                 "classification":  "Best Effort",
+                                 "mode":  "display-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-VMware-game-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "VMware",
+                                 "classification":  "Best Effort",
+                                 "mode":  "game-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-VMware-remote-receiver",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "VMware",
+                                 "classification":  "Best Effort",
+                                 "mode":  "remote-receiver",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-VMware-recording",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "VMware",
+                                 "classification":  "Best Effort",
+                                 "mode":  "recording",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-VMware-stream",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "VMware",
+                                 "classification":  "Best Effort",
+                                 "mode":  "stream",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-VirtualBox-window-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "VirtualBox",
+                                 "classification":  "Best Effort",
+                                 "mode":  "window-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-VirtualBox-display-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "VirtualBox",
+                                 "classification":  "Best Effort",
+                                 "mode":  "display-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-VirtualBox-game-capture",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "VirtualBox",
+                                 "classification":  "Best Effort",
+                                 "mode":  "game-capture",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-VirtualBox-remote-receiver",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "VirtualBox",
+                                 "classification":  "Best Effort",
+                                 "mode":  "remote-receiver",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-VirtualBox-recording",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "VirtualBox",
+                                 "classification":  "Best Effort",
+                                 "mode":  "recording",
+                                 "status":  "not-tested"
+                             },
+                             {
+                                 "id":  "capture-VirtualBox-stream",
+                                 "evidence":  [
+
+                                              ],
+                                 "app":  "VirtualBox",
+                                 "classification":  "Best Effort",
+                                 "mode":  "stream",
+                                 "status":  "not-tested"
+                             }
+                         ],
+    "runtimeScenarios":  [
+                             {
+                                 "status":  "not-tested",
+                                 "evidence":  [
+
+                                              ],
+                                 "metrics":  null,
+                                 "id":  "runtime-tick"
+                             },
+                             {
+                                 "status":  "not-tested",
+                                 "evidence":  [
+
+                                              ],
+                                 "metrics":  null,
+                                 "id":  "watcher-latency"
+                             },
+                             {
+                                 "status":  "not-tested",
+                                 "evidence":  [
+
+                                              ],
+                                 "metrics":  null,
+                                 "id":  "detection-latency"
+                             },
+                             {
+                                 "status":  "not-tested",
+                                 "evidence":  [
+
+                                              ],
+                                 "metrics":  null,
+                                 "id":  "remediation-latency"
+                             },
+                             {
+                                 "status":  "not-tested",
+                                 "evidence":  [
+
+                                              ],
+                                 "metrics":  null,
+                                 "id":  "guard-restart"
+                             },
+                             {
+                                 "status":  "not-tested",
+                                 "evidence":  [
+
+                                              ],
+                                 "metrics":  null,
+                                 "id":  "overlay-recovery"
+                             },
+                             {
+                                 "status":  "not-tested",
+                                 "evidence":  [
+
+                                              ],
+                                 "metrics":  null,
+                                 "id":  "desktop-restore"
+                             },
+                             {
+                                 "status":  "not-tested",
+                                 "evidence":  [
+
+                                              ],
+                                 "metrics":  null,
+                                 "id":  "service-restart"
+                             },
+                             {
+                                 "status":  "not-tested",
+                                 "evidence":  [
+
+                                              ],
+                                 "metrics":  null,
+                                 "id":  "heartbeat-delay"
+                             },
+                             {
+                                 "status":  "not-tested",
+                                 "evidence":  [
+
+                                              ],
+                                 "metrics":  null,
+                                 "id":  "maximum-tick-jitter"
+                             }
+                         ],
+    "faultInjectionEnabled":  false,
+    "faultScenarios":  [
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "kill-electron"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "kill-rust-core"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "kill-bootstrapper"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "kill-watchdog"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "kill-service"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "close-stdin"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "named-pipe-disconnect"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "named-pipe-failure"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "heartbeat-timeout"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "kill-explorer"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "restart-explorer"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "restart-dwm"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "uac-prompt"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "crash-during-kiosk"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "crash-during-restore"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "crash-during-desktop-switch"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "clipboard-failure"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "sleep-during-kiosk"
+                           },
+                           {
+                               "status":  "skipped",
+                               "evidence":  [
+
+                                            ],
+                               "id":  "power-interruption-simulated"
+                           }
+                       ],
+    "soakScenarios":  [
+                          {
+                              "status":  "not-tested",
+                              "evidence":  [
+
+                                           ],
+                              "durationMinutes":  30
+                          },
+                          {
+                              "status":  "not-tested",
+                              "evidence":  [
+
+                                           ],
+                              "durationMinutes":  60
+                          },
+                          {
+                              "status":  "not-tested",
+                              "evidence":  [
+
+                                           ],
+                              "durationMinutes":  120
+                          },
+                          {
+                              "status":  "not-tested",
+                              "evidence":  [
+
+                                           ],
+                              "durationMinutes":  240
+                          },
+                          {
+                              "status":  "not-tested",
+                              "evidence":  [
+
+                                           ],
+                              "durationMinutes":  480
+                          }
+                      ],
+    "stressScenarios":  [
+                            {
+                                "status":  "not-tested",
+                                "evidence":  [
+
+                                             ],
+                                "id":  "repeated-exam-start"
+                            },
+                            {
+                                "status":  "not-tested",
+                                "evidence":  [
+
+                                             ],
+                                "id":  "repeated-restore"
+                            },
+                            {
+                                "status":  "not-tested",
+                                "evidence":  [
+
+                                             ],
+                                "id":  "rapid-monitor-hotplug"
+                            },
+                            {
+                                "status":  "not-tested",
+                                "evidence":  [
+
+                                             ],
+                                "id":  "rapid-dpi-change"
+                            },
+                            {
+                                "status":  "not-tested",
+                                "evidence":  [
+
+                                             ],
+                                "id":  "repeated-clipboard-access"
+                            },
+                            {
+                                "status":  "not-tested",
+                                "evidence":  [
+
+                                             ],
+                                "id":  "rapid-focus-changes"
+                            },
+                            {
+                                "status":  "not-tested",
+                                "evidence":  [
+
+                                             ],
+                                "id":  "massive-process-creation"
+                            },
+                            {
+                                "status":  "not-tested",
+                                "evidence":  [
+
+                                             ],
+                                "id":  "policy-reload"
+                            },
+                            {
+                                "status":  "not-tested",
+                                "evidence":  [
+
+                                             ],
+                                "id":  "thousands-runtime-events"
+                            }
+                        ],
+    "evidenceRequirements":  [
+                                 "runner-log",
+                                 "machine-info",
+                                 "dpi-info",
+                                 "monitor-info",
+                                 "runtime-snapshot",
+                                 "policy-snapshot",
+                                 "receiver-capture",
+                                 "local-screen",
+                                 "process-remediation-log",
+                                 "restore-state-before",
+                                 "restore-state-after",
+                                 "runtime-metrics",
+                                 "performance-metrics",
+                                 "desktop-telemetry",
+                                 "fault-injection-log",
+                                 "acceptance-decision"
+                             ],
+    "notes":  [
+                  "This runner records environment and evidence slots.",
+                  "not-tested means no production claim has been made for that scenario.",
+                  "Capture receiver output and destructive fault injection require an isolated Windows VM."
+              ]
+}

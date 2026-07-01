@@ -1,0 +1,121 @@
+{
+  "schemaVersion": 1,
+  "verdicts": ["PASS", "PASS WITH LIMITATIONS", "FAIL", "NOT TESTED"],
+  "categories": [
+    {
+      "id": "capture-validation",
+      "title": "Capture Validation",
+      "requiredEvidence": [
+        "local-screen",
+        "receiver-capture",
+        "recording",
+        "runtime-snapshot",
+        "policy-snapshot",
+        "acceptance-decision"
+      ],
+      "expected": "Candidate sees exam content locally; receiver capture is black, excluded, blocked, or explicitly classified as best-effort/unsupported."
+    },
+    {
+      "id": "runtime-validation",
+      "title": "Runtime Validation",
+      "requiredEvidence": [
+        "runtime-metrics",
+        "process-remediation-log",
+        "runtime-snapshot",
+        "acceptance-decision"
+      ],
+      "expected": "Runtime tick, watcher, detection, remediation, guard restart and heartbeat latency stay under configured thresholds."
+    },
+    {
+      "id": "etw-producer-validation",
+      "title": "ETW Producer Validation",
+      "requiredEvidence": [
+        "runtime-metrics",
+        "performance-metrics",
+        "fault-injection-log",
+        "runtime-snapshot",
+        "acceptance-decision"
+      ],
+      "expected": "A real Microsoft-Windows-Kernel-Process session emits start, stop and rundown events; TDH fields reach RuntimeStateEngine; loss is detected; restart and polling reconciliation are proven under flood."
+    },
+    {
+      "id": "fault-injection",
+      "title": "Fault Injection",
+      "requiredEvidence": [
+        "fault-injection-log",
+        "restore-state-before",
+        "restore-state-after",
+        "desktop-telemetry",
+        "acceptance-decision"
+      ],
+      "expected": "Injected failure is recorded, recovery is observed, desktop/taskbar/cursor are restored, and audit evidence exists."
+    },
+    {
+      "id": "soak-test",
+      "title": "Soak Test",
+      "requiredEvidence": [
+        "performance-metrics",
+        "runtime-metrics",
+        "desktop-telemetry",
+        "acceptance-decision"
+      ],
+      "expected": "No CPU, memory, handle, thread, overlay, desktop lifetime or guard health leak over the requested duration."
+    },
+    {
+      "id": "stress-test",
+      "title": "Stress Test",
+      "requiredEvidence": [
+        "runtime-metrics",
+        "performance-metrics",
+        "fault-injection-log",
+        "acceptance-decision"
+      ],
+      "expected": "Repeated start/restore, monitor, DPI, clipboard, focus, process and policy stress does not corrupt runtime state."
+    },
+    {
+      "id": "desktop-validation",
+      "title": "Desktop Validation",
+      "requiredEvidence": [
+        "desktop-telemetry",
+        "restore-state-before",
+        "restore-state-after",
+        "acceptance-decision"
+      ],
+      "expected": "Dedicated desktop is created before Electron, switched during exam, restored and destroyed after exit or crash."
+    },
+    {
+      "id": "service-validation",
+      "title": "Service Validation",
+      "requiredEvidence": [
+        "process-remediation-log",
+        "runtime-metrics",
+        "acceptance-decision"
+      ],
+      "expected": "Installed Windows Service starts, stops, rejects stalled/flood clients and performs authorized elevated remediation."
+    },
+    {
+      "id": "benchmark-validation",
+      "title": "Benchmark Validation",
+      "requiredEvidence": [
+        "runtime-metrics",
+        "performance-metrics",
+        "acceptance-decision"
+      ],
+      "expected": "Runtime, producer, queue, remediation and recovery latency remain under release thresholds."
+    }
+  ],
+  "knownLimitations": {
+    "windows": [
+      "Ctrl+Alt+Del and UAC Secure Desktop are OS-controlled and cannot be blocked by user-mode code.",
+      "RDP attach/detach can alter session and display behavior and must be classified from evidence."
+    ],
+    "electron": [
+      "Electron content protection behavior depends on OS compositor and capture path.",
+      "BrowserWindow content protection must be verified with receiver-side evidence for every supported capture stack."
+    ],
+    "wda": [
+      "SetWindowDisplayAffinity is not DRM and cannot stop physical cameras, hardware capture cards, kernel drivers or future unsupported capture APIs.",
+      "WDA results vary by capture API, DWM state and Windows build."
+    ]
+  }
+}

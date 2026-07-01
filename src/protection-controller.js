@@ -34,6 +34,25 @@ function createDesktopProtectionController({ getMainWindow, globalShortcut }) {
   let savedMainWindowState = null;
   let isProtectionActive = false;
   let areDisplayListenersAttached = false;
+  let displaySyncHandler = null;
+
+  function getMainWindowHandleHex() {
+    const mainWindow = getMainWindow();
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return null;
+    }
+
+    const rawHandle = mainWindow.getNativeWindowHandle?.();
+    if (!rawHandle || typeof rawHandle.readBigUInt64LE !== "function") {
+      return null;
+    }
+
+    try {
+      return `0x${rawHandle.readBigUInt64LE(0).toString(16)}`;
+    } catch {
+      return null;
+    }
+  }
 
   async function syncOverlayWindows() {
     const displayPlan = buildDisplayProtectionPlan(screen);
@@ -41,14 +60,32 @@ function createDesktopProtectionController({ getMainWindow, globalShortcut }) {
     return displayPlan;
   }
 
+  async function syncProtectionTopology() {
+    if (typeof displaySyncHandler === "function") {
+      await displaySyncHandler();
+      return buildDisplayProtectionPlan(screen);
+    }
+
+    return syncOverlayWindows();
+  }
+
   function getVisualSnapshotPatch() {
     const displayPlan = buildDisplayProtectionPlan(screen);
+    const mainWindow = getMainWindow();
+    const electronContentProtectionActive = Boolean(
+      mainWindow &&
+        !mainWindow.isDestroyed() &&
+        typeof mainWindow.isContentProtected === "function" &&
+        mainWindow.isContentProtected(),
+    );
 
     return {
       kioskActive: isProtectionActive,
       overlayActive: overlayManager.getCount() > 0,
       keyboardHookActive: interactionState.keyboardHookActive,
       focusLockActive: interactionState.focusLockActive,
+      electronContentProtectionActive,
+      captureProtectionBestEffort: electronContentProtectionActive || overlayManager.getCount() > 0,
       activeMonitorCount: displayPlan.activeMonitorCount,
       blackOverlayCount: overlayManager.getCount(),
       lastRuntimeEventAt: interactionState.lastRuntimeEventAt,
@@ -78,7 +115,7 @@ function createDesktopProtectionController({ getMainWindow, globalShortcut }) {
     try {
       // Phase 6B should follow hot-plug events safely instead of leaving a
       // newly attached monitor uncovered during an active exam shell.
-      await syncOverlayWindows();
+      await syncProtectionTopology();
     } catch (error) {
       console.error("[desktop-core] Failed to refresh overlay windows after display change", error);
     }
@@ -106,7 +143,9 @@ function createDesktopProtectionController({ getMainWindow, globalShortcut }) {
     areDisplayListenersAttached = false;
   }
 
-  async function enterExamProtection() {
+  async function enterExamProtection(options = {}) {
+    const useOverlayFallback = Boolean(options.useOverlayFallback);
+
     if (isProtectionActive) {
       return {
         ...getVisualSnapshotPatch(),
@@ -128,7 +167,11 @@ function createDesktopProtectionController({ getMainWindow, globalShortcut }) {
       // unwind the same resources cleanly if any later step fails.
       applyExamWindowPresentation(mainWindow);
       attachDisplayListeners();
-      await syncOverlayWindows();
+      if (useOverlayFallback) {
+        await syncOverlayWindows();
+      } else {
+        overlayManager.destroyAll();
+      }
       isProtectionActive = true;
     } catch (error) {
       detachDisplayListeners();
@@ -146,9 +189,11 @@ function createDesktopProtectionController({ getMainWindow, globalShortcut }) {
 
   async function enterInteractionProtection(options = {}) {
     const skipKeyboardGuard = Boolean(options.skipKeyboardGuard);
+    const skipFocusGuard = Boolean(options.skipFocusGuard);
     const hasKeyboardProtection = skipKeyboardGuard ? true : interactionState.keyboardHookActive;
+    const hasFocusProtection = skipFocusGuard ? true : interactionState.focusLockActive;
 
-    if (hasKeyboardProtection && interactionState.focusLockActive) {
+    if (hasKeyboardProtection && hasFocusProtection) {
       return {
         ...getVisualSnapshotPatch(),
         examProtectionActive: true,
@@ -157,6 +202,9 @@ function createDesktopProtectionController({ getMainWindow, globalShortcut }) {
 
     try {
       if (skipKeyboardGuard) {
+        // Rust owns the real native keyboard hook. We still mirror the flag in
+        // the controller snapshot so the renderer stays in sync during the same
+        // lifecycle without installing a second Electron shortcut layer.
         interactionState.keyboardHookActive = true;
       } else {
         const inputPatch = inputGuard.activate();
@@ -164,9 +212,15 @@ function createDesktopProtectionController({ getMainWindow, globalShortcut }) {
         interactionState.lastRuntimeEventAt = inputPatch.lastRuntimeEventAt ?? interactionState.lastRuntimeEventAt;
       }
 
-      const focusPatch = focusGuard.activate();
-      interactionState.focusLockActive = Boolean(focusPatch.focusLockActive);
-      interactionState.lastRuntimeEventAt = focusPatch.lastRuntimeEventAt ?? interactionState.lastRuntimeEventAt;
+      if (skipFocusGuard) {
+        // Rust owns the primary focus lock in native mode. Electron keeps only
+        // the mirrored state instead of fighting for foreground ownership.
+        interactionState.focusLockActive = true;
+      } else {
+        const focusPatch = focusGuard.activate();
+        interactionState.focusLockActive = Boolean(focusPatch.focusLockActive);
+        interactionState.lastRuntimeEventAt = focusPatch.lastRuntimeEventAt ?? interactionState.lastRuntimeEventAt;
+      }
     } catch (error) {
       await restoreInteractionProtection();
       throw error;
@@ -221,7 +275,11 @@ function createDesktopProtectionController({ getMainWindow, globalShortcut }) {
     restoreInteractionProtection,
     restoreExamProtection,
     getVisualSnapshotPatch,
+    getMainWindowHandleHex,
     hasActiveProtection,
+    setDisplaySyncHandler(handler) {
+      displaySyncHandler = typeof handler === "function" ? handler : null;
+    },
   };
 }
 

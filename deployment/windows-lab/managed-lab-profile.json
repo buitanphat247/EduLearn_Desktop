@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "profileId": "edulearn-exam-lab-v1",
+  "managedDevicesOnly": true,
+  "deploymentMode": "audit",
+  "assignedAccess": {
+    "enabled": false,
+    "account": "EduLearnExamCandidate",
+    "appUserModelId": null
+  },
+  "appLocker": {
+    "enforcementMode": "AuditOnly",
+    "allowEduLearnPublisherRule": true,
+    "denyUnmanagedRemoteAndCaptureTools": true
+  },
+  "wdac": {
+    "policyMode": "Audit",
+    "requireSignedBinaries": true,
+    "supplementalPolicyAllowed": true
+  },
+  "groupPolicy": {
+    "disableTaskManager": true,
+    "disableCommandPrompt": true,
+    "disablePowerShellForCandidateAccount": true,
+    "disableRemoteDesktop": true,
+    "disableFastUserSwitching": true
+  },
+  "rollout": {
+    "pilotRingRequired": true,
+    "auditDays": 7,
+    "recoveryAccountRequired": true,
+    "restorePointRequired": true,
+    "helpDeskRunbookRequired": true
+  }
+}

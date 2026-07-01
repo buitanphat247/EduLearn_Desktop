@@ -1,4 +1,6 @@
 const fs = require("fs");
+const crypto = require("crypto");
+const net = require("net");
 const path = require("path");
 const readline = require("readline");
 const { spawn } = require("child_process");
@@ -6,7 +8,11 @@ const { spawn } = require("child_process");
 const {
   CORE_ERROR_CODES,
   createCoreErrorResponse,
-} = require("../../shared/contracts/safe-exam");
+} = require("./contracts/safe-exam");
+const {
+  createAuthenticatedFrame,
+  createFrameVerifier,
+} = require("./ipc-auth");
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 3000;
 
@@ -25,9 +31,16 @@ function resolveRustCoreBinaryPath() {
 function createRustSidecarTransport({ onEvent, onExit }) {
   let child = null;
   let stdoutReader = null;
+  let pipeReader = null;
+  let pipeSocket = null;
   let requestCounter = 0;
   let connected = false;
   let binaryPath = null;
+  let ipcSecret = null;
+  let verifyResponseFrame = null;
+  const useAuthenticatedPipe =
+    process.platform === "win32" &&
+    process.env.EDULEARN_CORE_IPC_MODE === "named-pipe";
   const pendingRequests = new Map();
 
   function cleanupPendingRequests(code, message) {
@@ -45,6 +58,20 @@ function createRustSidecarTransport({ onEvent, onExit }) {
     pendingRequests.clear();
   }
 
+  function handleCoreMessage(parsed) {
+    if (parsed && typeof parsed.requestId === "string" && pendingRequests.has(parsed.requestId)) {
+      const pendingRequest = pendingRequests.get(parsed.requestId);
+      pendingRequests.delete(parsed.requestId);
+      clearTimeout(pendingRequest.timeoutId);
+      pendingRequest.resolve(parsed);
+      return;
+    }
+
+    if (parsed && typeof parsed.event === "string") {
+      onEvent?.(parsed);
+    }
+  }
+
   function handleStdoutLine(line) {
     if (!line || !line.trim()) {
       return;
@@ -57,16 +84,22 @@ function createRustSidecarTransport({ onEvent, onExit }) {
       return;
     }
 
-    if (parsed && typeof parsed.requestId === "string" && pendingRequests.has(parsed.requestId)) {
-      const pendingRequest = pendingRequests.get(parsed.requestId);
-      pendingRequests.delete(parsed.requestId);
-      clearTimeout(pendingRequest.timeoutId);
-      pendingRequest.resolve(parsed);
+    handleCoreMessage(parsed);
+  }
+
+  function handlePipeLine(line) {
+    if (!line || !line.trim()) {
       return;
     }
-
-    if (parsed && typeof parsed.event === "string") {
-      onEvent?.(parsed);
+    try {
+      const frame = JSON.parse(line);
+      const payload = verifyResponseFrame(frame);
+      handleCoreMessage(payload);
+    } catch (error) {
+      cleanupPendingRequests(
+        CORE_ERROR_CODES.IPC_FAILURE,
+        error instanceof Error ? error.message : "Authenticated IPC response was rejected.",
+      );
     }
   }
 
@@ -106,10 +139,52 @@ function createRustSidecarTransport({ onEvent, onExit }) {
         stdoutReader.close();
         stdoutReader = null;
       }
+      if (pipeReader) {
+        pipeReader.removeAllListeners();
+        pipeReader.close();
+        pipeReader = null;
+      }
+      if (pipeSocket) {
+        pipeSocket.destroy();
+        pipeSocket = null;
+      }
 
       child = null;
       onExit?.({ code, signal, binaryPath });
     });
+  }
+
+  async function connectAuthenticatedPipe(pipePath, timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_MS) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      try {
+        const socket = await new Promise((resolve, reject) => {
+          const candidate = net.createConnection(pipePath);
+          candidate.once("connect", () => resolve(candidate));
+          candidate.once("error", reject);
+        });
+        pipeSocket = socket;
+        pipeReader = readline.createInterface({
+          input: socket,
+          crlfDelay: Infinity,
+        });
+        pipeReader.on("line", handlePipeLine);
+        socket.on("error", (error) => {
+          connected = false;
+          cleanupPendingRequests(
+            CORE_ERROR_CODES.IPC_FAILURE,
+            error instanceof Error ? error.message : "Authenticated named pipe failed.",
+          );
+        });
+        return;
+      } catch (error) {
+        if (!child || child.exitCode !== null) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+    throw new Error("Timed out while connecting to the authenticated Rust named pipe.");
   }
 
   async function waitForChildExit(timeoutMs = 2000) {
@@ -162,13 +237,49 @@ function createRustSidecarTransport({ onEvent, onExit }) {
       };
     }
 
-    const nextChild = spawn(binaryPath, [], {
+    let childArguments = [];
+    const childEnvironment = { ...process.env };
+    let pipePath = null;
+    if (useAuthenticatedPipe) {
+      ipcSecret = crypto.randomBytes(32);
+      const pipeName = `edulearn-core-${process.pid}-${crypto.randomBytes(12).toString("hex")}`;
+      pipePath = `\\\\.\\pipe\\${pipeName}`;
+      childArguments = ["--named-pipe", pipeName];
+      childEnvironment.EDULEARN_CORE_IPC_SECRET = ipcSecret.toString("base64url");
+      childEnvironment.EDULEARN_CORE_IPC_PARENT_PID = String(process.pid);
+      verifyResponseFrame = createFrameVerifier({
+        expectedKind: "response",
+        secret: ipcSecret,
+      });
+    }
+
+    const nextChild = spawn(binaryPath, childArguments, {
       cwd: path.dirname(binaryPath),
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
+      env: childEnvironment,
     });
 
     attachChildProcess(nextChild);
+    if (useAuthenticatedPipe) {
+      try {
+        await connectAuthenticatedPipe(pipePath);
+      } catch (error) {
+        connected = false;
+        if (child && !child.killed) {
+          child.kill("SIGTERM");
+          await waitForChildExit();
+        }
+        return {
+          connected: false,
+          errorCode: CORE_ERROR_CODES.IPC_FAILURE,
+          message:
+            error instanceof Error
+              ? error.message
+              : "Authenticated Rust named-pipe startup failed.",
+        };
+      }
+    }
     connected = true;
 
     return {
@@ -188,6 +299,13 @@ function createRustSidecarTransport({ onEvent, onExit }) {
         requestId,
         CORE_ERROR_CODES.CORE_NOT_CONNECTED,
         "Rust sidecar is not running.",
+      );
+    }
+    if (pendingRequests.has(requestId)) {
+      return createCoreErrorResponse(
+        requestId,
+        CORE_ERROR_CODES.IPC_FAILURE,
+        `Duplicate Rust sidecar request id was rejected: ${requestId}.`,
       );
     }
 
@@ -215,7 +333,16 @@ function createRustSidecarTransport({ onEvent, onExit }) {
       });
 
       try {
-        child.stdin.write(`${JSON.stringify(payload)}\n`);
+        if (useAuthenticatedPipe) {
+          const frame = createAuthenticatedFrame({
+            kind: "request",
+            payload,
+            secret: ipcSecret,
+          });
+          pipeSocket.write(`${JSON.stringify(frame)}\n`);
+        } else {
+          child.stdin.write(`${JSON.stringify(payload)}\n`);
+        }
       } catch (error) {
         pendingRequests.delete(requestId);
         clearTimeout(timeoutId);
@@ -250,13 +377,24 @@ function createRustSidecarTransport({ onEvent, onExit }) {
       return;
     }
 
-    setTimeout(() => {
-      if (child && !child.killed) {
-        child.kill("SIGTERM");
+    const childBeingStopped = child;
+    const terminationTimer = setTimeout(() => {
+      if (
+        childBeingStopped &&
+        !childBeingStopped.killed &&
+        childBeingStopped.exitCode === null
+      ) {
+        childBeingStopped.kill("SIGTERM");
       }
     }, 1000);
+    terminationTimer.unref?.();
 
     await waitForChildExit();
+    clearTimeout(terminationTimer);
+    if (pipeSocket) {
+      pipeSocket.destroy();
+      pipeSocket = null;
+    }
   }
 
   return {
@@ -268,6 +406,9 @@ function createRustSidecarTransport({ onEvent, onExit }) {
     },
     getBinaryPath() {
       return binaryPath;
+    },
+    getIpcMode() {
+      return useAuthenticatedPipe ? "named-pipe-authenticated" : "stdio";
     },
   };
 }

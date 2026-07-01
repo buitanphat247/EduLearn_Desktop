@@ -4,7 +4,7 @@ const {
   RUNTIME_CHANGED_EVENT,
   SESSION_STATES,
   createDesktopRuntimeSnapshot,
-} = require("../../shared/contracts/safe-exam");
+} = require("./contracts/safe-exam");
 
 let runtimeSnapshot = createDesktopRuntimeSnapshot({
   platform: process.platform,
@@ -59,6 +59,12 @@ function applyRuntimeSnapshot(snapshot) {
   document.documentElement.dataset.focusLockActive = runtimeSnapshot.focusLockActive ? "true" : "false";
   document.documentElement.dataset.captureProtectionActive = runtimeSnapshot.captureProtectionActive ? "true" : "false";
   document.documentElement.dataset.captureProtectionStatus = runtimeSnapshot.captureProtectionStatus ?? "inactive";
+  document.documentElement.dataset.electronContentProtectionActive =
+    runtimeSnapshot.electronContentProtectionActive ? "true" : "false";
+  document.documentElement.dataset.rustOverlayCaptureProtectionActive =
+    runtimeSnapshot.rustOverlayCaptureProtectionActive ? "true" : "false";
+  document.documentElement.dataset.captureProtectionBestEffort =
+    runtimeSnapshot.captureProtectionBestEffort ? "true" : "false";
   document.documentElement.dataset.runtimeMonitorActive = runtimeSnapshot.runtimeMonitorActive ? "true" : "false";
   document.documentElement.dataset.activeMonitorCount = String(runtimeSnapshot.activeMonitorCount ?? 0);
   document.documentElement.dataset.blackOverlayCount = String(runtimeSnapshot.blackOverlayCount ?? 0);
@@ -66,6 +72,7 @@ function applyRuntimeSnapshot(snapshot) {
     ? String(runtimeSnapshot.lastRuntimeEventAt)
     : "";
   document.documentElement.dataset.coreErrorCode = runtimeSnapshot.errorCode ?? "";
+  document.documentElement.dataset.guardHealth = JSON.stringify(runtimeSnapshot.guardHealth ?? {});
 
   window.dispatchEvent(
     new CustomEvent(RUNTIME_CHANGED_EVENT, {
@@ -173,6 +180,15 @@ contextBridge.exposeInMainWorld("desktopRuntime", {
   get captureProtectionStatus() {
     return runtimeSnapshot.captureProtectionStatus;
   },
+  get electronContentProtectionActive() {
+    return runtimeSnapshot.electronContentProtectionActive;
+  },
+  get rustOverlayCaptureProtectionActive() {
+    return runtimeSnapshot.rustOverlayCaptureProtectionActive;
+  },
+  get captureProtectionBestEffort() {
+    return runtimeSnapshot.captureProtectionBestEffort;
+  },
   get runtimeMonitorActive() {
     return runtimeSnapshot.runtimeMonitorActive;
   },
@@ -187,6 +203,18 @@ contextBridge.exposeInMainWorld("desktopRuntime", {
   },
   get errorCode() {
     return runtimeSnapshot.errorCode;
+  },
+  get guardHealth() {
+    return runtimeSnapshot.guardHealth;
+  },
+  get policyVersion() {
+    return runtimeSnapshot.policyVersion;
+  },
+  get policySource() {
+    return runtimeSnapshot.policySource;
+  },
+  get signedPolicyRequired() {
+    return runtimeSnapshot.signedPolicyRequired;
   },
   onRuntimeChanged: (handler) => {
     const listener = (_event, payload) => handler(payload);
@@ -226,6 +254,21 @@ contextBridge.exposeInMainWorld("desktopCore", {
       DESKTOP_CORE_CHANNELS.REQUEST,
       buildCommandRequest({
         cmd: "get_protection_status",
+      }),
+    ),
+  loadExamPolicy: (payload) =>
+    ipcRenderer.invoke(
+      DESKTOP_CORE_CHANNELS.REQUEST,
+      buildCommandRequest({
+        cmd: "load_policy",
+        payload,
+      }),
+    ),
+  getPolicyStatus: () =>
+    ipcRenderer.invoke(
+      DESKTOP_CORE_CHANNELS.REQUEST,
+      buildCommandRequest({
+        cmd: "get_policy_status",
       }),
     ),
 });

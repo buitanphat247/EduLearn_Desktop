@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "mode": "destructive-vm-only",
+  "owner": "bootstrapper",
+  "desktopName": "EduLearnExamDesktop",
+  "requiredOperatingSystems": [
+    "Windows 10 22H2",
+    "Windows 11 22H2",
+    "Windows 11 23H2",
+    "Windows 11 24H2"
+  ],
+  "displayTopologies": [
+    "single-monitor-landscape",
+    "dual-monitor-landscape",
+    "triple-monitor-landscape",
+    "mixed-dpi-100-125-150",
+    "portrait-secondary-monitor",
+    "hdr-primary-monitor",
+    "usb-display-adapter",
+    "docking-station-hotplug"
+  ],
+  "desktopLifecycleScenarios": [
+    "create-desktop-before-electron",
+    "electron-startupinfo-lpdesktop-assigned",
+    "switch-to-exam-desktop",
+    "normal-exit-restores-default-desktop",
+    "electron-crash-restores-default-desktop",
+    "rust-core-crash-restores-default-desktop",
+    "watchdog-timeout-restores-default-desktop",
+    "switch-desktop-failure-terminates-child",
+    "create-desktop-failure-does-not-launch-child",
+    "close-desktop-failure-records-telemetry"
+  ],
+  "inputIsolationScenarios": [
+    "alt-tab-does-not-show-default-desktop-windows",
+    "win-key-does-not-open-default-desktop-start-menu",
+    "ctrl-esc-does-not-open-default-desktop-start-menu",
+    "alt-esc-does-not-cycle-default-desktop-windows",
+    "win-tab-task-view-limited-by-windows-secure-desktop-behavior"
+  ],
+  "systemEdgeScenarios": [
+    "sleep-resume",
+    "hibernate-resume",
+    "lock-unlock",
+    "fast-user-switching",
+    "rdp-attach",
+    "rdp-detach",
+    "uac-secure-desktop",
+    "explorer-restart",
+    "dwm-restart",
+    "display-hotplug-during-exam"
+  ],
+  "requiredTelemetryEvents": [
+    "DesktopCreated",
+    "DesktopSwitched",
+    "DesktopRestored",
+    "DesktopDestroyed",
+    "DesktopRecoveryStarted",
+    "DesktopRecoveryCompleted",
+    "DesktopCrashRecovered"
+  ],
+  "requiredEvidence": [
+    "desktop-telemetry-jsonl",
+    "default-desktop-before",
+    "exam-desktop-active",
+    "default-desktop-after",
+    "watchdog-log",
+    "emergency-restore-log",
+    "alt-tab-video-or-screenshot",
+    "crash-recovery-timeline"
+  ],
+  "knownWindowsLimitations": [
+    "Ctrl+Alt+Del uses Windows Secure Desktop and cannot be blocked by user-mode code.",
+    "UAC prompts can switch to Secure Desktop depending on system policy.",
+    "Desktop isolation requires VM evidence before it can be enabled by default for high-stakes exams."
+  ]
+}

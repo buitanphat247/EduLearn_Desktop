@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 2,
+  "disclaimer": "Capture protection is best-effort. It cannot stop physical cameras, hardware capture cards, kernel drivers, admin tampering or future unsupported OS capture paths.",
+  "tools": [
+    "OBS",
+    "Discord",
+    "Teams",
+    "Zoom",
+    "Google Meet",
+    "Webex",
+    "Skype",
+    "AnyDesk",
+    "UltraViewer",
+    "RustDesk",
+    "RDP",
+    "Quick Assist",
+    "Windows Snipping Tool",
+    "Win+Shift+S",
+    "Lightshot",
+    "Greenshot",
+    "ShareX",
+    "Game Bar",
+    "Xbox Capture"
+  ],
+  "captureModes": [
+    "window-capture",
+    "display-capture",
+    "game-capture",
+    "remote-receiver",
+    "recording",
+    "stream"
+  ],
+  "classification": [
+    "Blocked",
+    "Best Effort",
+    "Unsupported",
+    "Bypass Possible"
+  ],
+  "requiredArtifacts": [
+    "local-screenshot",
+    "receiver-screenshot",
+    "receiver-recording",
+    "runtime-snapshot",
+    "policy-snapshot",
+    "process-remediation-log",
+    "capture-tool-version",
+    "capture-mode",
+    "expected-result",
+    "observed-result",
+    "known-limitation",
+    "pass-fail-note"
+  ],
+  "acceptance": {
+    "receiverBlackFrameOrExcludedWindowDocumented": true,
+    "localExamContentStillVisibleToCandidate": true,
+    "toolAndCaptureModeRecorded": true,
+    "bestEffortLimitationAcknowledged": true,
+    "knownBypassChannelsDocumented": true
+  }
+}

@@ -43,6 +43,20 @@ class FakeBrowserWindow {
     }
   }
 
+  on(eventName, handler) {
+    this.handlers.set(eventName, handler);
+  }
+
+  emitClose() {
+    let prevented = false;
+    this.handlers.get("close")?.({
+      preventDefault() {
+        prevented = true;
+      },
+    });
+    return prevented;
+  }
+
   isDestroyed() {
     return this.destroyed;
   }
@@ -68,6 +82,7 @@ test("overlay-manager creates one overlay per secondary display and destroys sta
   assert.equal(overlayManager.getCount(), 2);
   assert.equal(FakeBrowserWindow.instances[0].ignoreMouseEvents, false);
   assert.equal(FakeBrowserWindow.instances[0].contentProtection, true);
+  assert.equal(FakeBrowserWindow.instances[0].emitClose(), true);
 
   await overlayManager.syncSecondaryDisplays([{ id: 3, bounds: { x: 3840, y: 0, width: 1600, height: 900 } }]);
 

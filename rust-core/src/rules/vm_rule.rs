@@ -5,8 +5,8 @@ use crate::rules::PrecheckRule;
 pub struct VirtualMachineRule;
 
 impl PrecheckRule for VirtualMachineRule {
-    fn evaluate(&self, snapshot: &PrecheckSnapshot, _policy: &PrecheckPolicy) -> Vec<EvaluationFinding> {
-        if snapshot.vm_signals.is_empty() {
+    fn evaluate(&self, snapshot: &PrecheckSnapshot, policy: &PrecheckPolicy) -> Vec<EvaluationFinding> {
+        if policy.allow_vm || snapshot.vm_signals.is_empty() {
             return Vec::new();
         }
 

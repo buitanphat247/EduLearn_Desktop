@@ -3,11 +3,20 @@ use crate::models::{
     PreflightLogLine, PreflightResult,
 };
 use crate::policy::PrecheckPolicy;
+use crate::policy_model::ExamPolicy;
 use crate::rules::run_precheck_rules;
 use std::collections::BTreeSet;
 
+#[cfg(test)]
 pub fn evaluate_precheck_snapshot(snapshot: &PrecheckSnapshot) -> PrecheckEvaluation {
     let policy = PrecheckPolicy::for_snapshot(snapshot);
+    evaluate_precheck_snapshot_with_policy(snapshot, &policy)
+}
+
+fn evaluate_precheck_snapshot_with_policy(
+    snapshot: &PrecheckSnapshot,
+    policy: &PrecheckPolicy,
+) -> PrecheckEvaluation {
     let findings = run_precheck_rules(snapshot, &policy);
     let total_risk_score = findings
         .iter()
@@ -40,8 +49,12 @@ pub fn evaluate_precheck_snapshot(snapshot: &PrecheckSnapshot) -> PrecheckEvalua
     }
 }
 
-pub fn build_precheck_report(snapshot: PrecheckSnapshot) -> PrecheckReport {
-    let evaluation = evaluate_precheck_snapshot(&snapshot);
+pub fn build_precheck_report_with_policy(
+    snapshot: PrecheckSnapshot,
+    exam_policy: &ExamPolicy,
+) -> PrecheckReport {
+    let policy = PrecheckPolicy::from_exam_policy(exam_policy);
+    let evaluation = evaluate_precheck_snapshot_with_policy(&snapshot, &policy);
 
     PrecheckReport {
         collected_at: snapshot.collected_at,
@@ -50,9 +63,17 @@ pub fn build_precheck_report(snapshot: PrecheckSnapshot) -> PrecheckReport {
     }
 }
 
+#[cfg(test)]
 pub fn build_preflight_result(snapshot: PrecheckSnapshot) -> PreflightResult {
-    let policy = PrecheckPolicy::for_snapshot(&snapshot);
-    let report = build_precheck_report(snapshot);
+    build_preflight_result_with_policy(snapshot, &ExamPolicy::strict_builtin())
+}
+
+pub fn build_preflight_result_with_policy(
+    snapshot: PrecheckSnapshot,
+    exam_policy: &ExamPolicy,
+) -> PreflightResult {
+    let policy = PrecheckPolicy::from_exam_policy(exam_policy);
+    let report = build_precheck_report_with_policy(snapshot, exam_policy);
     let decision = build_preflight_decision(&report, &policy);
     let log_lines = build_preflight_log_lines(&report, &decision);
 
@@ -82,12 +103,15 @@ fn build_preflight_decision(
         .findings
         .iter()
         .any(|finding| finding.severity == "block");
-    let advisory_status = if report.evaluation.status == "ready" {
-        "ready"
-    } else {
+    let review_is_blocking = !policy.allow_continue_on_review && report.evaluation.status == "review";
+    let can_enter_exam = report.evaluation.status == "ready";
+    let decision_status = if has_blocking_finding || review_is_blocking || report.evaluation.status == "block" {
+        "block"
+    } else if report.evaluation.status == "review" {
         "review"
+    } else {
+        "ready"
     };
-    let can_enter_exam = true;
 
     let primary_reason_code = if report.evaluation.status == "ready" {
         "PREFLIGHT_READY".to_string()
@@ -103,10 +127,10 @@ fn build_preflight_decision(
     let primary_reason = if report.evaluation.status == "ready" {
         "System check passed. The exam room can be opened.".to_string()
     } else if has_blocking_finding {
-        "Warnings were detected before entering the room. Phase 5 still allows the room to open, but these findings should be resolved before secure session protection is enforced."
+        "Strict exam policy blocked room entry because a prohibited remote, capture, display, VM or debug signal was detected."
             .to_string()
     } else {
-        "Warnings were detected before entering the room. You can continue in this phase, but the findings should be reviewed before the protected exam session starts."
+        "Strict exam policy requires all warnings to be resolved before the protected exam session starts."
             .to_string()
     };
 
@@ -118,7 +142,7 @@ fn build_preflight_decision(
     };
 
     PreflightDecision {
-        status: advisory_status.to_string(),
+        status: decision_status.to_string(),
         can_enter_exam,
         allow_review_continue: policy.allow_continue_on_review,
         primary_reason,
@@ -294,6 +318,7 @@ mod tests {
         ProcessCategories {
             browser: Vec::new(),
             communication: Vec::new(),
+            policy_blocked: Vec::new(),
             remote_desktop: Vec::new(),
             screen_capture: Vec::new(),
             virtual_machine: Vec::new(),
@@ -352,13 +377,14 @@ mod tests {
     }
 
     #[test]
-    fn blocking_findings_still_build_an_advisory_preflight_gate_in_phase_five() {
+    fn blocking_findings_build_a_strict_preflight_gate() {
         let snapshot = build_snapshot(
             3,
             vec![ProcessInfo {
                 pid: 1234,
                 name: "AnyDesk.exe".to_string(),
                 executable_path: Some("C:\\AnyDesk.exe".to_string()),
+                creation_time_ms: Some(1_000),
                 memory_mb: 32,
                 categories: vec!["remote_desktop".to_string()],
             }],
@@ -369,8 +395,8 @@ mod tests {
 
         assert_eq!(result.report.evaluation.status, "block");
         assert_eq!(result.report.evaluation.total_risk_score, 100);
-        assert_eq!(result.decision.status, "review");
-        assert!(result.decision.can_enter_exam);
+        assert_eq!(result.decision.status, "block");
+        assert!(!result.decision.can_enter_exam);
         assert_eq!(result.decision.primary_reason_code, "process.remote");
         assert!(result
             .log_lines

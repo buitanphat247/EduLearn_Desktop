@@ -4,8 +4,14 @@ version = "0.0.1"
 edition = "2021"
 
 [dependencies]
+base64 = "0.22"
+ed25519-dalek = "2"
+hmac = "0.12"
+getrandom = "0.2"
 serde = { version = "1", features = ["derive"] }
+serde_jcs = "0.1"
 serde_json = "1"
+sha2 = "0.10"
 sysinfo = "0.30"
 winreg = "0.52"
-windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_DataExchange", "Win32_System_Diagnostics_Etw", "Win32_System_IO", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_StationsAndDesktops", "Win32_System_Threading", "Win32_System_Time", "Win32_UI_Accessibility", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }

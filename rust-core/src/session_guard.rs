@@ -11,6 +11,7 @@ pub const SESSION_STATE_SAVING_DESKTOP_STATE: &str = "SAVING_DESKTOP_STATE";
 pub const SESSION_STATE_ENTERING_KIOSK: &str = "ENTERING_KIOSK";
 pub const SESSION_STATE_PROTECTION_ACTIVE: &str = "PROTECTION_ACTIVE";
 pub const SESSION_STATE_EXAM_RUNNING: &str = "EXAM_RUNNING";
+pub const SESSION_STATE_RECOVERY_REQUIRED: &str = "RECOVERY_REQUIRED";
 pub const SESSION_STATE_EXIT_REQUESTED: &str = "EXIT_REQUESTED";
 pub const SESSION_STATE_EXITING_KIOSK: &str = "EXITING_KIOSK";
 pub const SESSION_STATE_RESTORING_DESKTOP: &str = "RESTORING_DESKTOP";
@@ -18,6 +19,37 @@ pub const SESSION_STATE_EXAM_ENDED: &str = "EXAM_ENDED";
 pub const SESSION_STATE_IDLE: &str = "IDLE";
 pub const SESSION_STATE_PROTECTION_FAILED: &str = "PROTECTION_FAILED";
 pub const SESSION_STATE_RESTORE_FAILED: &str = "RESTORE_FAILED";
+
+pub fn is_valid_session_transition(from: &str, to: &str) -> bool {
+    if from == to {
+        return true;
+    }
+
+    matches!(
+        (from, to),
+        (SESSION_STATE_INIT, SESSION_STATE_PREFLIGHT_READY)
+            | (SESSION_STATE_INIT, SESSION_STATE_STARTING_EXAM_SESSION)
+            | (SESSION_STATE_INIT, SESSION_STATE_EXAM_RUNNING)
+            | (SESSION_STATE_IDLE, SESSION_STATE_PREFLIGHT_READY)
+            | (SESSION_STATE_IDLE, SESSION_STATE_STARTING_EXAM_SESSION)
+            | (SESSION_STATE_IDLE, SESSION_STATE_EXAM_RUNNING)
+            | (
+                SESSION_STATE_PREFLIGHT_READY,
+                SESSION_STATE_STARTING_EXAM_SESSION
+            )
+            | (SESSION_STATE_PREFLIGHT_READY, SESSION_STATE_EXAM_RUNNING)
+            | (
+                SESSION_STATE_STARTING_EXAM_SESSION,
+                SESSION_STATE_EXAM_RUNNING
+            )
+            | (SESSION_STATE_EXAM_RUNNING, SESSION_STATE_RECOVERY_REQUIRED)
+            | (SESSION_STATE_STARTING_EXAM_SESSION, SESSION_STATE_IDLE)
+            | (SESSION_STATE_EXAM_RUNNING, SESSION_STATE_IDLE)
+            | (SESSION_STATE_RECOVERY_REQUIRED, SESSION_STATE_IDLE)
+            | (SESSION_STATE_PROTECTION_FAILED, SESSION_STATE_IDLE)
+            | (SESSION_STATE_RESTORE_FAILED, SESSION_STATE_IDLE)
+    )
+}
 
 fn build_log_line(timestamp: u64, level: &str, code: &str, message: impl Into<String>) -> ProtectionLogLine {
     ProtectionLogLine {
@@ -37,8 +69,17 @@ pub fn build_idle_protection_status() -> ProtectionStatus {
         taskbar_hidden: false,
         keyboard_hook_active: false,
         focus_lock_active: false,
+        input_hook_active: false,
+        mouse_hook_active: false,
+        focus_hook_active: false,
+        clipboard_listener_active: false,
+        overlay_heal_active: false,
+        capture_heal_active: false,
         capture_protection_active: false,
         capture_protection_status: "inactive".to_string(),
+        electron_content_protection_active: false,
+        rust_overlay_capture_protection_active: false,
+        capture_protection_best_effort: false,
         runtime_monitor_active: false,
         active_monitor_count: 0,
         black_overlay_count: 0,
@@ -71,12 +112,21 @@ pub fn build_start_exam_session_result(
         taskbar_hidden: false,
         keyboard_hook_active: false,
         focus_lock_active: false,
+        input_hook_active: false,
+        mouse_hook_active: false,
+        focus_hook_active: false,
+        clipboard_listener_active: false,
+        overlay_heal_active: false,
+        capture_heal_active: false,
         capture_protection_active: false,
         capture_protection_status: if payload.dry_run {
             "dry-run".to_string()
         } else {
             "pending".to_string()
         },
+        electron_content_protection_active: false,
+        rust_overlay_capture_protection_active: false,
+        capture_protection_best_effort: false,
         runtime_monitor_active: false,
         active_monitor_count: display_plan.active_monitor_count,
         black_overlay_count: display_plan.black_overlay_count,
@@ -201,7 +251,10 @@ pub fn build_exit_exam_session_result(
 mod tests {
     use super::{
         build_exit_exam_session_result, build_idle_protection_status, build_start_exam_session_result,
-        SESSION_STATE_EXAM_RUNNING, SESSION_STATE_IDLE, SESSION_STATE_STARTING_EXAM_SESSION,
+        is_valid_session_transition, SESSION_STATE_EXAM_RUNNING, SESSION_STATE_IDLE,
+        SESSION_STATE_INIT, SESSION_STATE_PREFLIGHT_READY,
+        SESSION_STATE_RECOVERY_REQUIRED,
+        SESSION_STATE_STARTING_EXAM_SESSION,
     };
     use crate::models::{DesktopStateSnapshot, StartExamSessionPayload};
 
@@ -220,6 +273,9 @@ mod tests {
             session_id: "ses-1".to_string(),
             exam_id: Some("exam-1".to_string()),
             room_code: Some("ROOM-1".to_string()),
+            window_handle_hex: None,
+            exam_key: None,
+            service_authorization: None,
             dry_run,
         }
     }
@@ -260,5 +316,37 @@ mod tests {
         assert!(result.restored_desktop);
         assert!(!result.protection_status.exam_protection_active);
         assert_eq!(result.log_lines.last().map(|line| line.code.as_str()), Some(SESSION_STATE_IDLE));
+    }
+
+    #[test]
+    fn state_machine_accepts_exam_lifecycle_transitions() {
+        assert!(is_valid_session_transition(
+            SESSION_STATE_INIT,
+            SESSION_STATE_PREFLIGHT_READY,
+        ));
+        assert!(is_valid_session_transition(
+            SESSION_STATE_PREFLIGHT_READY,
+            SESSION_STATE_STARTING_EXAM_SESSION,
+        ));
+        assert!(is_valid_session_transition(
+            SESSION_STATE_STARTING_EXAM_SESSION,
+            SESSION_STATE_EXAM_RUNNING,
+        ));
+        assert!(is_valid_session_transition(
+            SESSION_STATE_EXAM_RUNNING,
+            SESSION_STATE_RECOVERY_REQUIRED,
+        ));
+        assert!(is_valid_session_transition(
+            SESSION_STATE_RECOVERY_REQUIRED,
+            SESSION_STATE_IDLE,
+        ));
+    }
+
+    #[test]
+    fn state_machine_rejects_runtime_to_preflight_regression() {
+        assert!(!is_valid_session_transition(
+            SESSION_STATE_EXAM_RUNNING,
+            SESSION_STATE_PREFLIGHT_READY,
+        ));
     }
 }

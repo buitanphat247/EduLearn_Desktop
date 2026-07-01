@@ -1,5 +1,5 @@
 const { ipcMain, shell } = require("electron");
-const { DESKTOP_CORE_CHANNELS } = require("../../shared/contracts/safe-exam");
+const { DESKTOP_CORE_CHANNELS } = require("./contracts/safe-exam");
 
 function registerDesktopOAuthIpc({ getPendingDeepLink, clearPendingDeepLink }) {
   if (ipcMain.listenerCount("desktop-oauth:get-pending") === 0) {
