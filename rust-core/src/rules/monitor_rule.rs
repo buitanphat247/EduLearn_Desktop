@@ -12,9 +12,9 @@ impl PrecheckRule for MonitorCountRule {
 
         vec![EvaluationFinding {
             rule_id: "monitor.multiple_displays".to_string(),
-            severity: "block".to_string(),
+            severity: "review".to_string(),
             confidence: 1.0,
-            risk_points: 70,
+            risk_points: 10,
             summary: "Multiple active displays detected.".to_string(),
             detail: format!(
                 "{} monitors are active. The exam flow is designed for a single focused display.",

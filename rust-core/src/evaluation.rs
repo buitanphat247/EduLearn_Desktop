@@ -4,6 +4,7 @@ use crate::models::{
 };
 use crate::policy::PrecheckPolicy;
 use crate::policy_model::ExamPolicy;
+use crate::process_policy::evaluate_process_policy;
 use crate::rules::run_precheck_rules;
 use std::collections::BTreeSet;
 
@@ -74,7 +75,7 @@ pub fn build_preflight_result_with_policy(
 ) -> PreflightResult {
     let policy = PrecheckPolicy::from_exam_policy(exam_policy);
     let report = build_precheck_report_with_policy(snapshot, exam_policy);
-    let decision = build_preflight_decision(&report, &policy);
+    let decision = build_preflight_decision(&report, &policy, exam_policy);
     let log_lines = build_preflight_log_lines(&report, &decision);
 
     PreflightResult {
@@ -97,23 +98,94 @@ fn collect_recommendations(findings: &[EvaluationFinding]) -> Vec<String> {
 fn build_preflight_decision(
     report: &PrecheckReport,
     policy: &PrecheckPolicy,
+    exam_policy: &ExamPolicy,
 ) -> PreflightDecision {
-    let has_blocking_finding = report
+    let process_policy = evaluate_process_policy(&report.snapshot.process_list, exam_policy);
+    let hard_blocked_processes = process_policy
+        .iter()
+        .filter(|process| process.action == "hardBlock")
+        .cloned()
+        .collect::<Vec<_>>();
+    let terminate_required_processes = process_policy
+        .iter()
+        .filter(|process| process.action == "attemptTerminateThenBlock")
+        .cloned()
+        .collect::<Vec<_>>();
+    let continue_with_audit_processes = process_policy
+        .iter()
+        .filter(|process| {
+            process.action == "continueAndAudit"
+                || process.action == "attemptTerminateThenContinue"
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let isolate_and_protect_processes = process_policy
+        .iter()
+        .filter(|process| process.action == "isolateAndProtect")
+        .cloned()
+        .collect::<Vec<_>>();
+    let warnings = process_policy
+        .iter()
+        .filter(|process| process.action == "warnOnly")
+        .cloned()
+        .collect::<Vec<_>>();
+    let is_soft_environment_review =
+        |finding: &EvaluationFinding| finding.metadata.rule_id == "monitor.multiple_displays";
+    let has_non_process_blocking_finding = report
         .evaluation
         .findings
         .iter()
-        .any(|finding| finding.severity == "block");
-    let review_is_blocking = !policy.allow_continue_on_review && report.evaluation.status == "review";
-    let can_enter_exam = report.evaluation.status == "ready";
-    let decision_status = if has_blocking_finding || review_is_blocking || report.evaluation.status == "block" {
+        .any(|finding| finding.severity == "block" && finding.metadata.category != "process");
+    let has_non_process_review_finding = !policy.allow_continue_on_review
+        && report
+            .evaluation
+            .findings
+            .iter()
+            .any(|finding| {
+                finding.metadata.category != "process"
+                    && !is_soft_environment_review(finding)
+                    && (finding.severity == "review" || finding.severity == "warn")
+            });
+    let has_process_blocker =
+        !hard_blocked_processes.is_empty() || !terminate_required_processes.is_empty();
+    let can_enter_exam = !has_process_blocker
+        && !has_non_process_blocking_finding
+        && !has_non_process_review_finding;
+    let has_elevated_risk = !continue_with_audit_processes.is_empty()
+        || !isolate_and_protect_processes.is_empty()
+        || !warnings.is_empty();
+    let decision_status = if !can_enter_exam {
         "block"
-    } else if report.evaluation.status == "review" {
+    } else if has_elevated_risk || report.evaluation.status != "ready" {
         "review"
     } else {
         "ready"
     };
+    let primary_non_process_finding = report
+        .evaluation
+        .findings
+        .iter()
+        .find(|finding| finding.metadata.category != "process");
 
-    let primary_reason_code = if report.evaluation.status == "ready" {
+    let primary_reason_code = if !hard_blocked_processes.is_empty() {
+        "PROCESS_HARD_BLOCKED".to_string()
+    } else if !terminate_required_processes.is_empty() {
+        "PROCESS_TERMINATION_REQUIRED".to_string()
+    } else if has_non_process_blocking_finding || has_non_process_review_finding {
+        report
+            .evaluation
+            .findings
+            .iter()
+            .find(|finding| {
+                finding.severity == "block" && finding.metadata.category != "process"
+            })
+            .map(|finding| finding.metadata.rule_id.clone())
+            .unwrap_or_else(|| "PREFLIGHT_ENVIRONMENT_BLOCK".to_string())
+    } else if let Some(finding) = primary_non_process_finding {
+        finding.metadata.rule_id.clone()
+    } else if has_elevated_risk {
+        "PROCESS_ALLOWED_UNDER_ISOLATION".to_string()
+    } else if report.evaluation.status == "ready" {
         "PREFLIGHT_READY".to_string()
     } else {
         report
@@ -124,13 +196,22 @@ fn build_preflight_decision(
             .unwrap_or_else(|| "PREFLIGHT_WARNING_REVIEW".to_string())
     };
 
-    let primary_reason = if report.evaluation.status == "ready" {
-        "System check passed. The exam room can be opened.".to_string()
-    } else if has_blocking_finding {
-        "Strict exam policy blocked room entry because a prohibited remote, capture, display, VM or debug signal was detected."
+    let primary_reason = if !hard_blocked_processes.is_empty() {
+        "Exam entry is blocked by a signed hardBlock process rule.".to_string()
+    } else if !terminate_required_processes.is_empty() {
+        "Exam entry requires policy-authorized process termination before startup.".to_string()
+    } else if has_non_process_blocking_finding || has_non_process_review_finding {
+        "Exam entry is blocked by a non-process environment protection rule.".to_string()
+    } else if primary_non_process_finding.is_some() {
+        "A non-process environment warning was detected. The exam may continue, but the session will remain under review."
             .to_string()
+    } else if has_elevated_risk {
+        "Remote-control or capture software is present. The exam may continue under monitored isolation and best-effort capture protection."
+            .to_string()
+    } else if report.evaluation.status == "ready" {
+        "System check passed. The exam room can be opened.".to_string()
     } else {
-        "Strict exam policy requires all warnings to be resolved before the protected exam session starts."
+        "Warnings were detected and will be recorded while the protected session continues."
             .to_string()
     };
 
@@ -150,6 +231,16 @@ fn build_preflight_decision(
         reason_codes,
         policy_version: policy.policy_version.clone(),
         recommendations,
+        hard_blocked_processes,
+        terminate_required_processes,
+        continue_with_audit_processes,
+        isolate_and_protect_processes,
+        warnings,
+        runtime_risk_level: if has_elevated_risk {
+            "elevated".to_string()
+        } else {
+            "normal".to_string()
+        },
     }
 }
 
@@ -377,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn blocking_findings_build_a_strict_preflight_gate() {
+    fn multiple_displays_stay_reviewable_without_blocking_exam_entry() {
         let snapshot = build_snapshot(
             3,
             vec![ProcessInfo {
@@ -393,14 +484,60 @@ mod tests {
 
         let result = build_preflight_result(snapshot);
 
-        assert_eq!(result.report.evaluation.status, "block");
-        assert_eq!(result.report.evaluation.total_risk_score, 100);
-        assert_eq!(result.decision.status, "block");
-        assert!(!result.decision.can_enter_exam);
-        assert_eq!(result.decision.primary_reason_code, "process.remote");
+        assert_eq!(result.report.evaluation.status, "review");
+        assert_eq!(result.report.evaluation.total_risk_score, 55);
+        assert_eq!(result.decision.status, "review");
+        assert!(result.decision.can_enter_exam);
+        assert_eq!(result.decision.primary_reason_code, "monitor.multiple_displays");
         assert!(result
             .log_lines
             .iter()
             .any(|line| line.code == "PROCESS.REMOTE" || line.code == "PROCESS.REMOTE.1234"));
+    }
+
+    #[test]
+    fn remote_process_alone_continues_under_isolation() {
+        let snapshot = build_snapshot(
+            1,
+            vec![ProcessInfo {
+                pid: 1234,
+                name: "AnyDesk.exe".to_string(),
+                executable_path: Some("C:\\AnyDesk.exe".to_string()),
+                creation_time_ms: Some(1_000),
+                memory_mb: 32,
+                categories: vec!["remoteDesktop".to_string()],
+            }],
+            Vec::new(),
+        );
+
+        let result = build_preflight_result(snapshot);
+
+        assert_eq!(result.decision.status, "review");
+        assert!(result.decision.can_enter_exam);
+        assert_eq!(result.decision.runtime_risk_level, "elevated");
+        assert_eq!(result.decision.isolate_and_protect_processes.len(), 1);
+        assert!(result.decision.hard_blocked_processes.is_empty());
+    }
+
+    #[test]
+    fn debugger_process_remains_fail_closed() {
+        let mut snapshot = build_snapshot(1, Vec::new(), Vec::new());
+        let debugger = ProcessInfo {
+            pid: 4321,
+            name: "windbg.exe".to_string(),
+            executable_path: Some("C:\\windbg.exe".to_string()),
+            creation_time_ms: Some(2_000),
+            memory_mb: 40,
+            categories: vec!["debugTools".to_string()],
+        };
+        snapshot.process_list.push(debugger.clone());
+        snapshot.process_categories.debug_tools.push(debugger);
+        snapshot.summary.total_process_count = 1;
+
+        let result = build_preflight_result(snapshot);
+
+        assert_eq!(result.decision.status, "block");
+        assert!(!result.decision.can_enter_exam);
+        assert_eq!(result.decision.hard_blocked_processes.len(), 1);
     }
 }

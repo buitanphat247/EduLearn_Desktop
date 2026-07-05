@@ -40,5 +40,13 @@
     "dotenv": "^17.2.3",
     "electronmon": "^2.0.4",
     "wait-on": "^9.0.10"
+  },
+  "electronmon": {
+    "patterns": [
+      "!logs/**",
+      "!demo/**",
+      "!mock/**",
+      "!**/*.jsonl"
+    ]
   }
 }

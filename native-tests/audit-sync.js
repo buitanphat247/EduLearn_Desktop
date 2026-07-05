@@ -23,6 +23,9 @@ function buildAuditSyncBundle({
   sessionId,
   policyVersion,
   generatedAt,
+  uploadEndpoint,
+  ackCommand,
+  localRetention = "retain-until-ack",
 } = {}) {
   const chain = validateHashChain(records);
   if (!chain.valid) {
@@ -37,13 +40,28 @@ function buildAuditSyncBundle({
       reason: "missing-sync-identity",
     };
   }
+  if (uploadEndpoint !== "/exam-security/audit/upload") {
+    return {
+      ready: false,
+      reason: "missing-audit-upload-endpoint",
+    };
+  }
+  if (ackCommand !== "ack_audit_upload_batch") {
+    return {
+      ready: false,
+      reason: "missing-local-ack-command",
+    };
+  }
   return {
     ready: true,
-    schemaVersion: 1,
+    schemaVersion: 2,
     generatedAt,
     deviceIdHash,
     sessionId,
     policyVersion: policyVersion ?? null,
+    uploadEndpoint,
+    ackCommand,
+    localRetention,
     recordCount: records.length,
     firstHash: records[0].currentHash,
     headHash: records[records.length - 1].currentHash,

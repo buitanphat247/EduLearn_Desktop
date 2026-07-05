@@ -29,7 +29,12 @@
     "watchdog-timeout-restores-default-desktop",
     "switch-desktop-failure-terminates-child",
     "create-desktop-failure-does-not-launch-child",
-    "close-desktop-failure-records-telemetry"
+    "close-desktop-failure-records-telemetry",
+    "emergency-restore-widget-has-trusted-restore-path",
+    "native-emergency-restore-widget-is-bootstrapper-owned",
+    "bootstrapper-fallback-restores-default-desktop-after-rust-crash",
+    "bootstrapper-fallback-restores-default-desktop-after-renderer-crash",
+    "hold-to-restore-uses-real-native-input"
   ],
   "inputIsolationScenarios": [
     "alt-tab-does-not-show-default-desktop-windows",
@@ -66,6 +71,8 @@
     "default-desktop-after",
     "watchdog-log",
     "emergency-restore-log",
+    "emergency-restore-widget-screenshot",
+    "bootstrapper-recovery-log",
     "alt-tab-video-or-screenshot",
     "crash-recovery-timeline"
   ],

@@ -1,5 +1,8 @@
+mod emergency_widget;
+
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use emergency_widget::{EmergencyWidgetManager, NativeWidgetEventKind, NativeWidgetState};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -14,6 +17,85 @@ const DEFAULT_STARTUP_GRACE_MS: u64 = 30_000;
 const MONITOR_INTERVAL_MS: u64 = 500;
 const MAX_HEARTBEAT_BYTES: u64 = 64 * 1024;
 type HmacSha256 = Hmac<Sha256>;
+
+const BOOTSTRAPPER_WIDGET_STATE_ENV: &str = "EDULEARN_BOOTSTRAPPER_WIDGET_STATE_PATH";
+const BOOTSTRAPPER_WIDGET_EVENT_ENV: &str = "EDULEARN_BOOTSTRAPPER_WIDGET_EVENT_PATH";
+const BOOTSTRAPPER_RESTORE_REQUEST_ENV: &str = "EDULEARN_BOOTSTRAPPER_RESTORE_REQUEST_PATH";
+const BOOTSTRAPPER_EMERGENCY_REPORT_ENV: &str = "EDULEARN_BOOTSTRAPPER_EMERGENCY_REPORT";
+
+#[derive(Debug, Clone)]
+struct BootstrapperControlPaths {
+    root_dir: PathBuf,
+    widget_state_path: PathBuf,
+    widget_event_path: PathBuf,
+    restore_request_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct WidgetStateRecord {
+    visible: bool,
+    emergency_restore_widget_state: String,
+    widget_id: Option<String>,
+    correlation_id: Option<String>,
+    require_hold_ms: u64,
+    session_id: Option<String>,
+    exam_id: Option<String>,
+    runtime_id: Option<String>,
+    kiosk_active: bool,
+    desktop_isolation_active: bool,
+    updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WidgetInteractionRecord {
+    kind: String,
+    session_id: Option<String>,
+    exam_id: Option<String>,
+    runtime_id: Option<String>,
+    widget_id: Option<String>,
+    correlation_id: Option<String>,
+    requested_at: u64,
+    desktop_isolation_active: bool,
+    kiosk_active: bool,
+    nonce: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RestoreRequestRecord {
+    trigger: String,
+    session_id: Option<String>,
+    exam_id: Option<String>,
+    runtime_id: Option<String>,
+    widget_id: Option<String>,
+    correlation_id: Option<String>,
+    requested_at: u64,
+    desktop_isolation_active: bool,
+    kiosk_active: bool,
+    fallback_used: bool,
+    timeout_used: bool,
+    detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct BootstrapperEmergencyReport {
+    trigger: String,
+    session_id: Option<String>,
+    exam_id: Option<String>,
+    runtime_id: Option<String>,
+    widget_id: Option<String>,
+    correlation_id: Option<String>,
+    requested_at: u64,
+    desktop_isolation_active: bool,
+    fallback_used: bool,
+    timeout_used: bool,
+    desktop_switched_back: bool,
+    desktop_destroyed: bool,
+    detail: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BootstrapConfig {
@@ -304,6 +386,89 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
+}
+
+fn bootstrapper_control_paths() -> BootstrapperControlPaths {
+    let root_dir = std::env::temp_dir().join(format!(
+        "edulearn-bootstrapper-control-{}-{}",
+        std::process::id(),
+        now_ms()
+    ));
+    BootstrapperControlPaths {
+        widget_state_path: root_dir.join("widget-state.json"),
+        widget_event_path: root_dir.join("widget-event.json"),
+        restore_request_path: root_dir.join("restore-request.json"),
+        root_dir,
+    }
+}
+
+fn ensure_control_root(paths: &BootstrapperControlPaths) -> Result<(), String> {
+    fs::create_dir_all(&paths.root_dir)
+        .map_err(|error| format!("Failed to create bootstrapper control directory: {error}"))
+}
+
+fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    let bytes = serde_json::to_vec(value)
+        .map_err(|error| format!("Failed to serialize control payload: {error}"))?;
+    let temp_path = path.with_extension("tmp");
+    fs::write(&temp_path, bytes)
+        .map_err(|error| format!("Failed to write control file {}: {error}", path.display()))?;
+    fs::rename(&temp_path, path)
+        .map_err(|error| format!("Failed to finalize control file {}: {error}", path.display()))
+}
+
+fn read_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Option<T>, String> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let contents = fs::read_to_string(path)
+        .map_err(|error| format!("Failed to read control file {}: {error}", path.display()))?;
+    let value = serde_json::from_str::<T>(&contents)
+        .map_err(|error| format!("Failed to parse control file {}: {error}", path.display()))?;
+    Ok(Some(value))
+}
+
+fn take_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Option<T>, String> {
+    let value = read_json_file(path)?;
+    if value.is_some() {
+        let _ = fs::remove_file(path);
+    }
+    Ok(value)
+}
+
+fn map_widget_state(record: WidgetStateRecord) -> NativeWidgetState {
+    NativeWidgetState {
+        visible: record.visible,
+        widget_id: record.widget_id,
+        correlation_id: record.correlation_id,
+        require_hold_ms: record.require_hold_ms,
+        desktop_isolation_active: record.desktop_isolation_active,
+        updated_at_ms: record.updated_at_ms,
+    }
+}
+
+fn build_widget_interaction_record(
+    event_kind: &NativeWidgetEventKind,
+    state: WidgetStateRecord,
+) -> WidgetInteractionRecord {
+    let requested_at = now_ms();
+    WidgetInteractionRecord {
+        kind: match event_kind {
+            NativeWidgetEventKind::HoldStarted => "holdStarted",
+            NativeWidgetEventKind::HoldCancelled => "holdCancelled",
+            NativeWidgetEventKind::HoldCompleted => "restoreRequested",
+        }
+        .to_string(),
+        session_id: state.session_id,
+        exam_id: state.exam_id,
+        runtime_id: state.runtime_id,
+        widget_id: state.widget_id,
+        correlation_id: state.correlation_id,
+        requested_at,
+        desktop_isolation_active: state.desktop_isolation_active,
+        kiosk_active: state.kiosk_active,
+        nonce: format!("bootstrapper-widget-{requested_at}"),
+    }
 }
 
 fn generate_token() -> Result<String, String> {
@@ -875,9 +1040,17 @@ fn launch_electron(
     token: &str,
     challenge: &str,
     desktop_path: Option<&str>,
+    control_paths: &BootstrapperControlPaths,
 ) -> Result<ElectronChild, String> {
     if let Some(desktop_path) = desktop_path {
-        return launch_electron_on_desktop(config, heartbeat_path, token, challenge, desktop_path);
+        return launch_electron_on_desktop(
+            config,
+            heartbeat_path,
+            token,
+            challenge,
+            desktop_path,
+            control_paths,
+        );
     }
 
     Command::new(&config.electron_path)
@@ -885,6 +1058,17 @@ fn launch_electron(
         .env("EDULEARN_WATCHDOG_HEARTBEAT_PATH", heartbeat_path)
         .env("EDULEARN_WATCHDOG_TOKEN", token)
         .env("EDULEARN_WATCHDOG_CHALLENGE", challenge)
+        .env(BOOTSTRAPPER_WIDGET_STATE_ENV, &control_paths.widget_state_path)
+        .env(BOOTSTRAPPER_WIDGET_EVENT_ENV, &control_paths.widget_event_path)
+        .env(BOOTSTRAPPER_RESTORE_REQUEST_ENV, &control_paths.restore_request_path)
+        .env(
+            "EDULEARN_EXAM_DESKTOP_ISOLATION_ACTIVE",
+            if config.desktop_isolation.enabled { "1" } else { "0" },
+        )
+        .env(
+            "EDULEARN_EXAM_DESKTOP_NAME",
+            config.desktop_isolation.desktop_name.as_str(),
+        )
         .spawn()
         .map(ElectronChild::Std)
         .map_err(|error| format!("Failed to launch Electron: {error}"))
@@ -897,6 +1081,7 @@ fn launch_electron_on_desktop(
     _token: &str,
     _challenge: &str,
     _desktop_path: &str,
+    _control_paths: &BootstrapperControlPaths,
 ) -> Result<ElectronChild, String> {
     Err("Desktop isolation launch is only supported on Windows.".to_string())
 }
@@ -908,6 +1093,7 @@ fn launch_electron_on_desktop(
     token: &str,
     challenge: &str,
     desktop_path: &str,
+    control_paths: &BootstrapperControlPaths,
 ) -> Result<ElectronChild, String> {
     use std::ffi::c_void;
     use windows::core::{PCWSTR, PWSTR};
@@ -937,6 +1123,23 @@ fn launch_electron_on_desktop(
         ),
         ("EDULEARN_WATCHDOG_TOKEN", token),
         ("EDULEARN_WATCHDOG_CHALLENGE", challenge),
+        (
+            BOOTSTRAPPER_WIDGET_STATE_ENV,
+            control_paths.widget_state_path.to_string_lossy().as_ref(),
+        ),
+        (
+            BOOTSTRAPPER_WIDGET_EVENT_ENV,
+            control_paths.widget_event_path.to_string_lossy().as_ref(),
+        ),
+        (
+            BOOTSTRAPPER_RESTORE_REQUEST_ENV,
+            control_paths.restore_request_path.to_string_lossy().as_ref(),
+        ),
+        ("EDULEARN_EXAM_DESKTOP_ISOLATION_ACTIVE", "1"),
+        (
+            "EDULEARN_EXAM_DESKTOP_NAME",
+            config.desktop_isolation.desktop_name.as_str(),
+        ),
     ]);
 
     let mut startup = STARTUPINFOW::default();
@@ -988,9 +1191,18 @@ fn terminate_child_after_launch_failure(child: &mut ElectronChild) {
     let _ = child.wait();
 }
 
-fn run_emergency_restore(rust_core_path: &Path) -> Result<(), String> {
-    let status = Command::new(rust_core_path)
-        .arg("--emergency-restore")
+fn run_emergency_restore(
+    rust_core_path: &Path,
+    report: Option<&BootstrapperEmergencyReport>,
+) -> Result<(), String> {
+    let mut command = Command::new(rust_core_path);
+    command.arg("--emergency-restore");
+    if let Some(report) = report {
+        let encoded = serde_json::to_string(report)
+            .map_err(|error| format!("Failed to serialize bootstrapper emergency report: {error}"))?;
+        command.env(BOOTSTRAPPER_EMERGENCY_REPORT_ENV, encoded);
+    }
+    let status = command
         .status()
         .map_err(|error| format!("Failed to launch emergency restore: {error}"))?;
     if status.success() {
@@ -1087,9 +1299,15 @@ fn run(config: BootstrapConfig) -> Result<i32, String> {
     }
 
     let path = heartbeat_path();
+    let control_paths = bootstrapper_control_paths();
+    ensure_control_root(&control_paths)?;
     let token = generate_token()?;
     let challenge = generate_token()?;
     let expected_electron_hash = file_sha256(&config.electron_path)?;
+    let mut widget_manager = EmergencyWidgetManager::new();
+    let mut last_widget_state = WidgetStateRecord::default();
+    let mut restore_report: Option<BootstrapperEmergencyReport> = None;
+    let mut widget_restore_pending_since_ms: Option<u64> = None;
     let mut desktop_session = if config.desktop_isolation.enabled {
         let session = desktop_isolation::DesktopManager::create_session(DesktopContext {
             desktop_name: config.desktop_isolation.desktop_name.clone(),
@@ -1110,6 +1328,7 @@ fn run(config: BootstrapConfig) -> Result<i32, String> {
         &token,
         &challenge,
         desktop_path.as_deref(),
+        &control_paths,
     ) {
         Ok(child) => child,
         Err(error) => {
@@ -1154,6 +1373,84 @@ fn run(config: BootstrapConfig) -> Result<i32, String> {
     let mut monitor_error = None;
 
     let result = loop {
+        match read_json_file::<WidgetStateRecord>(&control_paths.widget_state_path) {
+            Ok(Some(widget_state)) => {
+                last_widget_state = widget_state.clone();
+                widget_manager.update_state(map_widget_state(widget_state));
+            }
+            Ok(None) => {}
+            Err(error) => {
+                monitor_error = Some(error);
+                let _ = job.terminate();
+                let _ = child.wait();
+                break 222;
+            }
+        }
+
+        for event in widget_manager.drain_events() {
+            if last_widget_state.widget_id.is_none() {
+                continue;
+            }
+            let interaction = build_widget_interaction_record(&event.kind, last_widget_state.clone());
+            let _ = write_json_file(&control_paths.widget_event_path, &interaction);
+            if matches!(event.kind, NativeWidgetEventKind::HoldCompleted) {
+                widget_restore_pending_since_ms = Some(now_ms());
+            }
+        }
+
+        match take_json_file::<RestoreRequestRecord>(&control_paths.restore_request_path) {
+            Ok(Some(request)) => {
+                restore_report = Some(BootstrapperEmergencyReport {
+                    trigger: request.trigger,
+                    session_id: request.session_id,
+                    exam_id: request.exam_id,
+                    runtime_id: request.runtime_id,
+                    widget_id: request.widget_id,
+                    correlation_id: request.correlation_id,
+                    requested_at: request.requested_at,
+                    desktop_isolation_active: request.desktop_isolation_active,
+                    fallback_used: request.fallback_used,
+                    timeout_used: request.timeout_used,
+                    desktop_switched_back: false,
+                    desktop_destroyed: false,
+                    detail: request.detail,
+                });
+                let _ = job.terminate();
+                let _ = child.wait();
+                break 222;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                monitor_error = Some(error);
+                let _ = job.terminate();
+                let _ = child.wait();
+                break 222;
+            }
+        }
+
+        if let Some(pending_since_ms) = widget_restore_pending_since_ms {
+            if now_ms().saturating_sub(pending_since_ms) >= 2_500 {
+                restore_report = Some(BootstrapperEmergencyReport {
+                    trigger: "bootstrapper-widget-fallback".to_string(),
+                    session_id: last_widget_state.session_id.clone(),
+                    exam_id: last_widget_state.exam_id.clone(),
+                    runtime_id: last_widget_state.runtime_id.clone(),
+                    widget_id: last_widget_state.widget_id.clone(),
+                    correlation_id: last_widget_state.correlation_id.clone(),
+                    requested_at: pending_since_ms,
+                    desktop_isolation_active: last_widget_state.desktop_isolation_active,
+                    fallback_used: true,
+                    timeout_used: true,
+                    desktop_switched_back: false,
+                    desktop_destroyed: false,
+                    detail: "Bootstrapper emergency restore fallback triggered because Rust did not acknowledge the widget request in time.".to_string(),
+                });
+                let _ = job.terminate();
+                let _ = child.wait();
+                break 222;
+            }
+        }
+
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => {}
@@ -1199,9 +1496,16 @@ fn run(config: BootstrapConfig) -> Result<i32, String> {
             "DesktopRecoveryCompleted"
         };
         restore_desktop_session(session, "Bootstrapper monitor loop completed.", terminal_event);
+        if let Some(report) = restore_report.as_mut() {
+            let telemetry = session.telemetry();
+            report.desktop_switched_back = telemetry.desktop_restored;
+            report.desktop_destroyed = telemetry.desktop_destroyed;
+        }
     }
-    let restore_result = run_emergency_restore(&config.rust_core_path);
+    widget_manager.shutdown();
+    let restore_result = run_emergency_restore(&config.rust_core_path, restore_report.as_ref());
     let _ = fs::remove_file(&path);
+    let _ = fs::remove_dir_all(&control_paths.root_dir);
     restore_result?;
     if let Some(error) = monitor_error {
         return Err(format!(
@@ -1231,10 +1535,11 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::{
+        bootstrapper_control_paths, build_widget_interaction_record,
         build_command_line, evaluate_heartbeat, heartbeat_challenge_payload, hmac_sha256_hex,
         validate_desktop_name, BootstrapConfig, DesktopRestorePlan, DesktopSnapshot,
         HeartbeatHealth, HeartbeatRecord,
-        DEFAULT_HEARTBEAT_TIMEOUT_MS,
+        NativeWidgetEventKind, WidgetStateRecord, DEFAULT_HEARTBEAT_TIMEOUT_MS,
     };
     use std::path::Path;
 
@@ -1344,6 +1649,38 @@ mod tests {
             .map(str::to_string),
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn control_paths_create_separate_widget_and_restore_files() {
+        let paths = bootstrapper_control_paths();
+        assert!(paths.widget_state_path.ends_with("widget-state.json"));
+        assert!(paths.widget_event_path.ends_with("widget-event.json"));
+        assert!(paths.restore_request_path.ends_with("restore-request.json"));
+    }
+
+    #[test]
+    fn widget_interaction_records_preserve_bootstrapper_widget_context() {
+        let record = build_widget_interaction_record(
+            &NativeWidgetEventKind::HoldCompleted,
+            WidgetStateRecord {
+                visible: true,
+                emergency_restore_widget_state: "visible".to_string(),
+                widget_id: Some("widget-1".to_string()),
+                correlation_id: Some("corr-1".to_string()),
+                require_hold_ms: 2_000,
+                session_id: Some("session-1".to_string()),
+                exam_id: Some("exam-1".to_string()),
+                runtime_id: Some("runtime-1".to_string()),
+                kiosk_active: true,
+                desktop_isolation_active: true,
+                updated_at_ms: 1_000,
+            },
+        );
+        assert_eq!(record.kind, "restoreRequested");
+        assert_eq!(record.widget_id.as_deref(), Some("widget-1"));
+        assert_eq!(record.runtime_id.as_deref(), Some("runtime-1"));
+        assert!(record.desktop_isolation_active);
     }
 
     fn signed_record(token: &str, challenge: &str) -> HeartbeatRecord {

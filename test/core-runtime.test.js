@@ -2,9 +2,20 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const { createDesktopCoreRuntime } = require("../src/core-runtime");
-const { SESSION_STATES } = require("../src/contracts/safe-exam");
+const {
+  createDesktopRuntimeSnapshot,
+  isSafeExamCommand,
+  SESSION_STATES,
+} = require("../src/contracts/safe-exam");
 
-function createTransportHarness({ runtimeTickDeferred = null } = {}) {
+function createTransportHarness({
+  runtimeTickDeferred = null,
+  exitExamResponse = null,
+  startExamResponse = null,
+  startExamProcessPolicy = [],
+  startExamRuntimeRiskLevel = "normal",
+  notifyVisualKioskReadyResponse = null,
+} = {}) {
   const requests = [];
   const requestOptions = [];
   const stopCalls = [];
@@ -80,11 +91,29 @@ function createTransportHarness({ runtimeTickDeferred = null } = {}) {
             error: null,
           };
         case "force_restore_desktop":
+        case "request_emergency_restore":
           return {
             requestId: request.requestId ?? "restore",
             ok: true,
             data: {
+              decision: {
+                accepted: true,
+                state: "accepted",
+                reason: "Emergency restore request accepted.",
+                correlationId: "correlation-1",
+              },
               sessionState: SESSION_STATES.IDLE,
+              emergencyRestore: {
+                emergencyRestoreWidgetVisible: false,
+                emergencyRestoreWidgetState: "completed",
+                lastEmergencyRestoreRequestAt: 1_782_600_000_055,
+                lastEmergencyRestoreResult: "completed",
+                emergencyRestoreAttemptCount: 1,
+                emergencyRestoreLastError: null,
+                widgetId: "widget-1",
+                correlationId: "correlation-1",
+                requireHoldMs: 2000,
+              },
               protectionStatus: {
                 examProtectionActive: false,
                 protectionDryRun: false,
@@ -104,6 +133,9 @@ function createTransportHarness({ runtimeTickDeferred = null } = {}) {
             error: null,
           };
         case "exit_exam_session":
+          if (exitExamResponse) {
+            return exitExamResponse;
+          }
           return {
             requestId: request.requestId ?? "exit",
             ok: true,
@@ -140,6 +172,52 @@ function createTransportHarness({ runtimeTickDeferred = null } = {}) {
               retryCount: 0,
               attemptCount: 1,
               failures: [],
+              actions: [],
+              hardBlockedProcesses: [],
+              terminateRequiredProcesses: [],
+              continueWithAuditProcesses: [],
+              isolateAndProtectProcesses: [],
+              warnings: [],
+              runtimeRiskLevel: "normal",
+            },
+            error: null,
+          };
+        case "get_protection_status":
+          return {
+            requestId: request.requestId ?? "protection-status",
+            ok: true,
+            data: {
+              sessionState: SESSION_STATES.STARTING_EXAM_SESSION,
+              activeSessionId: "session-1",
+              desktopStateCaptured: true,
+              protectionStatus: {
+                examProtectionActive: false,
+                protectionDryRun: false,
+                kioskActive: false,
+                overlayActive: false,
+                taskbarHidden: false,
+                keyboardHookActive: false,
+                focusLockActive: false,
+                captureProtectionActive: false,
+                captureProtectionStatus: "pending",
+                runtimeMonitorActive: false,
+                activeMonitorCount: 1,
+                blackOverlayCount: 0,
+                lastRuntimeEventAt: null,
+              },
+              runtimeRiskLevel: "normal",
+              runtimeEvents: [],
+              emergencyRestore: {
+                emergencyRestoreWidgetVisible: false,
+                emergencyRestoreWidgetState: "hidden",
+                lastEmergencyRestoreRequestAt: null,
+                lastEmergencyRestoreResult: null,
+                emergencyRestoreAttemptCount: 0,
+                emergencyRestoreLastError: null,
+                widgetId: null,
+                correlationId: null,
+                requireHoldMs: 2000,
+              },
             },
             error: null,
           };
@@ -302,6 +380,9 @@ function createTransportHarness({ runtimeTickDeferred = null } = {}) {
             error: null,
           };
         case "start_exam_session":
+          if (startExamResponse) {
+            return startExamResponse;
+          }
           return {
             requestId: request.requestId ?? "start-session",
             ok: true,
@@ -337,6 +418,8 @@ function createTransportHarness({ runtimeTickDeferred = null } = {}) {
                 blackOverlayCount: 0,
                 lastRuntimeEventAt: null,
               },
+              runtimeRiskLevel: startExamRuntimeRiskLevel,
+              processPolicy: startExamProcessPolicy,
               logLines: [],
             },
             error: null,
@@ -346,7 +429,7 @@ function createTransportHarness({ runtimeTickDeferred = null } = {}) {
             requestId: request.requestId ?? "enter-kiosk",
             ok: true,
             data: {
-              sessionState: SESSION_STATES.EXAM_RUNNING,
+              sessionState: SESSION_STATES.ENTERING_KIOSK,
               protectionStatus: {
                 examProtectionActive: true,
                 protectionDryRun: false,
@@ -370,6 +453,43 @@ function createTransportHarness({ runtimeTickDeferred = null } = {}) {
                 activeMonitorCount: 1,
                 blackOverlayCount: 0,
                 lastRuntimeEventAt: 1_782_600_000_040,
+              },
+              logLines: [],
+            },
+            error: null,
+          };
+        case "notify_visual_kiosk_ready":
+          if (notifyVisualKioskReadyResponse) {
+            return notifyVisualKioskReadyResponse;
+          }
+          return {
+            requestId: request.requestId ?? "notify-visual-kiosk-ready",
+            ok: true,
+            data: {
+              sessionState: SESSION_STATES.EXAM_RUNNING_CONFIRMED,
+              protectionStatus: {
+                examProtectionActive: true,
+                protectionDryRun: false,
+                kioskActive: true,
+                overlayActive: false,
+                taskbarHidden: true,
+                keyboardHookActive: true,
+                focusLockActive: true,
+                inputHookActive: true,
+                mouseHookActive: true,
+                focusHookActive: true,
+                clipboardListenerActive: true,
+                overlayHealActive: true,
+                captureHealActive: true,
+                captureProtectionActive: true,
+                captureProtectionStatus: "electron-content-protection-active",
+                electronContentProtectionActive: true,
+                rustOverlayCaptureProtectionActive: false,
+                captureProtectionBestEffort: true,
+                runtimeMonitorActive: true,
+                activeMonitorCount: 1,
+                blackOverlayCount: 0,
+                lastRuntimeEventAt: 1_782_600_000_041,
               },
               logLines: [],
             },
@@ -406,6 +526,49 @@ function createDeferred() {
   return { promise, resolve };
 }
 
+test("safe exam contract accepts audit commands and normalizes audit health", () => {
+  assert.equal(isSafeExamCommand("request_emergency_restore"), true);
+  assert.equal(isSafeExamCommand("get_audit_status"), true);
+  assert.equal(isSafeExamCommand("verify_audit_chain"), true);
+  assert.equal(isSafeExamCommand("drain_audit_upload_batch"), true);
+  assert.equal(isSafeExamCommand("ack_audit_upload_batch"), true);
+  assert.equal(isSafeExamCommand("record_audit_upload_failure"), true);
+  assert.equal(isSafeExamCommand("sign_audit_upload"), true);
+
+  const snapshot = createDesktopRuntimeSnapshot({
+    runtime: "electron",
+    audit: {
+      auditEnabled: true,
+      auditHealth: "healthy",
+      auditQueueDepth: 4,
+      pendingUploads: 3,
+      failedUploads: 1,
+      lastSuccessfulUpload: 1_782_600_000_000,
+      lastFailure: "server offline",
+      hashChainStatus: "valid",
+      syncLatencyMs: 42,
+    },
+    emergencyRestore: {
+      emergencyRestoreWidgetVisible: true,
+      emergencyRestoreWidgetState: "visible",
+      lastEmergencyRestoreRequestAt: 1_782_600_000_000,
+      lastEmergencyRestoreResult: "accepted",
+      emergencyRestoreAttemptCount: 1,
+      emergencyRestoreLastError: null,
+      widgetId: "widget-1",
+      correlationId: "correlation-1",
+      requireHoldMs: 2000,
+    },
+  });
+
+  assert.equal(snapshot.audit.auditEnabled, true);
+  assert.equal(snapshot.audit.auditHealth, "healthy");
+  assert.equal(snapshot.audit.pendingUploads, 3);
+  assert.equal(snapshot.audit.hashChainStatus, "valid");
+  assert.equal(snapshot.emergencyRestore.emergencyRestoreWidgetVisible, true);
+  assert.equal(snapshot.emergencyRestore.emergencyRestoreWidgetState, "visible");
+});
+
 test("desktop core runtime hydrates its snapshot from the Rust handshake", async () => {
   const harness = createTransportHarness();
   const runtime = createDesktopCoreRuntime({
@@ -438,6 +601,7 @@ test("desktop core runtime requests a forced restore before stopping an active p
     overlayActive: true,
     taskbarHidden: true,
     keyboardHookActive: true,
+    runtimeRiskLevel: "elevated",
   });
 
   await runtime.stop();
@@ -481,11 +645,15 @@ test("desktop core runtime restores local visual protection after an exit comman
   await runtime.start();
   runtime.updateSnapshot({
     sessionState: SESSION_STATES.EXAM_RUNNING,
+    audioLockActive: true,
     examProtectionActive: true,
     kioskActive: true,
     overlayActive: true,
     taskbarHidden: true,
     keyboardHookActive: true,
+    runtimeRiskLevel: "elevated",
+  }, {
+    allowAudioLockMutation: true,
   });
 
   const response = await runtime.handleCommand({
@@ -498,9 +666,72 @@ test("desktop core runtime restores local visual protection after an exit comman
 
   assert.equal(response.ok, true);
   assert.equal(restoreCalls, 1);
-  assert.equal(runtime.getSnapshot().sessionState, SESSION_STATES.IDLE);
+  assert.equal(runtime.getSnapshot().sessionState, SESSION_STATES.EXITED);
+  assert.equal(runtime.getSnapshot().audioLockActive, false);
   assert.equal(runtime.getSnapshot().overlayActive, false);
   assert.equal(runtime.getSnapshot().keyboardHookActive, false);
+  assert.equal(runtime.getSnapshot().runtimeRiskLevel, "normal");
+});
+
+test("desktop core runtime treats emergency restore as a trusted restore command", async () => {
+  const harness = createTransportHarness();
+  let restoreCalls = 0;
+  const runtime = createDesktopCoreRuntime({
+    platform: "win32",
+    createSidecarTransport: harness.createSidecarTransport,
+    protectionController: {
+      hasActiveProtection() {
+        return true;
+      },
+      async restoreExamProtection() {
+        restoreCalls += 1;
+        return {
+          examProtectionActive: false,
+          kioskActive: false,
+          overlayActive: false,
+          taskbarHidden: false,
+          keyboardHookActive: false,
+          focusLockActive: false,
+          blackOverlayCount: 0,
+        };
+      },
+      getVisualSnapshotPatch() {
+        return {
+          examProtectionActive: true,
+          kioskActive: true,
+        };
+      },
+    },
+  });
+
+  await runtime.start();
+  runtime.updateSnapshot({
+    sessionState: SESSION_STATES.EXAM_RUNNING,
+    examProtectionActive: true,
+    kioskActive: true,
+    keyboardHookActive: true,
+  });
+
+  const response = await runtime.handleCommand({
+    cmd: "request_emergency_restore",
+    payload: {
+      sessionId: "session-1",
+      examId: "exam-1",
+      runtimeId: "runtime-1",
+      reason: "user_emergency_widget",
+      widgetId: "widget-1",
+      requestedAt: 1_782_600_000_055,
+      desktopIsolationActive: false,
+      kioskActive: true,
+      correlationId: "correlation-1",
+      nonce: "nonce-1",
+    },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(restoreCalls, 1);
+  assert.equal(runtime.getSnapshot().sessionState, SESSION_STATES.EXITED);
+  assert.equal(runtime.getSnapshot().emergencyRestore.emergencyRestoreWidgetState, "completed");
 });
 
 test("desktop core runtime hydrates the snapshot from a runtime monitor tick", async () => {
@@ -659,8 +890,544 @@ test("desktop core runtime gives native enter_kiosk a long timeout", async () =>
 
   assert.equal(response.ok, true);
   assert.equal(visualRestored, false);
+  assert.equal(runtime.getSnapshot().audioLockActive, true);
+  assert.equal(
+    [
+      SESSION_STATES.EXAM_RUNNING_CONFIRMED,
+      SESSION_STATES.EXAM_RUNNING,
+    ].includes(runtime.getSnapshot().sessionState),
+    true,
+  );
+  assert.equal(runtime.getSnapshot().kioskHandoffCompleted, true);
+  assert.equal(response.data.sessionState, SESSION_STATES.EXAM_RUNNING_CONFIRMED);
+  assert.equal(response.data.audioLockActive, true);
+  assert.equal(response.data.kioskHandoffCompleted, true);
   const enterKiosk = harness.requestOptions.find((entry) => entry.cmd === "enter_kiosk");
   assert.equal(enterKiosk.options.timeoutMs, 30_000);
+});
+
+test("desktop core runtime accepts start when Rust allows continue-and-audit processes", async () => {
+  const allowedProcess = {
+    pid: 42,
+    name: "remoting_host.exe",
+    executablePath: null,
+    creationTimeMs: 1,
+    category: "remote-control",
+    action: "continueAndAudit",
+    severity: "high",
+    allowExamStart: true,
+    attemptTerminate: false,
+    auditRequired: true,
+  };
+  const harness = createTransportHarness({
+    startExamProcessPolicy: [allowedProcess],
+    startExamRuntimeRiskLevel: "elevated",
+  });
+  const runtime = createDesktopCoreRuntime({
+    platform: "win32",
+    createSidecarTransport: harness.createSidecarTransport,
+  });
+
+  await runtime.start();
+  const response = await runtime.handleCommand({
+    cmd: "start_exam_session",
+    payload: { sessionId: "session-1", examId: "exam-1", dryRun: false },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.data.runtimeRiskLevel, "elevated");
+  assert.equal(response.data.processPolicy[0].action, "continueAndAudit");
+});
+
+test("desktop core runtime keeps ENTERING_KIOSK blocked when handoff confirmation is missing", async () => {
+  const harness = createTransportHarness({
+    notifyVisualKioskReadyResponse: {
+      requestId: "notify-visual-kiosk-ready",
+      ok: false,
+      data: null,
+      error: {
+        code: "PROTECTION_FAILURE",
+        message: "Visual kiosk handoff timed out.",
+      },
+    },
+  });
+  const runtime = createDesktopCoreRuntime({
+    platform: "win32",
+    createSidecarTransport: harness.createSidecarTransport,
+    protectionController: {
+      getMainWindowHandleHex() {
+        return "0x1234";
+      },
+      getVisualSnapshotPatch() {
+        return {
+          electronContentProtectionActive: true,
+          captureProtectionBestEffort: true,
+        };
+      },
+      async enterExamProtection() {
+        return {
+          examProtectionActive: true,
+          kioskActive: true,
+          electronContentProtectionActive: true,
+        };
+      },
+      async enterInteractionProtection() {
+        return {
+          keyboardHookActive: true,
+          focusLockActive: true,
+          examProtectionActive: true,
+          kioskActive: true,
+        };
+      },
+      async restoreExamProtection() {
+        return {
+          examProtectionActive: false,
+          kioskActive: false,
+        };
+      },
+      hasActiveProtection() {
+        return true;
+      },
+    },
+  });
+
+  await runtime.start();
+  const response = await runtime.handleCommand({
+    cmd: "start_exam_session",
+    payload: { sessionId: "session-1", examId: "exam-1", dryRun: false },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(runtime.getSnapshot().sessionState, SESSION_STATES.ENTERING_KIOSK);
+  assert.equal(runtime.getSnapshot().audioLockActive, true);
+  assert.equal(runtime.getSnapshot().kioskHandoffCompleted, false);
+  assert.equal(response.data.sessionState, SESSION_STATES.ENTERING_KIOSK);
+  assert.equal(response.data.audioLockActive, true);
+  assert.equal(response.data.kioskHandoffCompleted, false);
+});
+
+test("desktop core runtime auto-confirms DEMO_STATIC without Rust final ACK", async () => {
+  const traceEvents = [];
+  const harness = createTransportHarness({
+    notifyVisualKioskReadyResponse: {
+      requestId: "notify-visual-kiosk-ready",
+      ok: false,
+      data: null,
+      error: {
+        code: "PROTECTION_FAILURE",
+        message: "This response should not be used in DEMO_STATIC.",
+      },
+    },
+  });
+  const runtime = createDesktopCoreRuntime({
+    platform: "win32",
+    createSidecarTransport: harness.createSidecarTransport,
+    examGuardTracer: {
+      recordIpc(event) {
+        traceEvents.push({ kind: "ipc", ...event });
+      },
+      recordLoop(event) {
+        traceEvents.push({ kind: "loop", ...event });
+      },
+      recordStateTransition(event) {
+        traceEvents.push({ kind: "state", ...event });
+      },
+    },
+    protectionController: {
+      getMainWindowHandleHex() {
+        return "0x1234";
+      },
+      getVisualSnapshotPatch() {
+        return {
+          electronContentProtectionActive: true,
+          captureProtectionBestEffort: true,
+        };
+      },
+      async enterExamProtection() {
+        return {
+          examProtectionActive: true,
+          kioskActive: true,
+          electronContentProtectionActive: true,
+        };
+      },
+      async enterInteractionProtection() {
+        return {
+          keyboardHookActive: true,
+          focusLockActive: true,
+          examProtectionActive: true,
+          kioskActive: true,
+        };
+      },
+      async restoreExamProtection() {
+        return {
+          examProtectionActive: false,
+          kioskActive: false,
+        };
+      },
+      hasActiveProtection() {
+        return true;
+      },
+    },
+  });
+
+  await runtime.start();
+  const response = await runtime.handleCommand({
+    cmd: "start_exam_session",
+    payload: {
+      sessionId: "session-1",
+      examId: "exam-1",
+      dryRun: false,
+      examMode: "DEMO_STATIC",
+    },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(runtime.getSnapshot().examMode, "DEMO_STATIC");
+  assert.equal(runtime.getSnapshot().sessionState, SESSION_STATES.EXAM_RUNNING_CONFIRMED);
+  assert.equal(runtime.getSnapshot().audioLockActive, true);
+  assert.equal(runtime.getSnapshot().kioskHandoffCompleted, true);
+  assert.equal(response.data.sessionState, SESSION_STATES.EXAM_RUNNING_CONFIRMED);
+  assert.equal(response.data.audioLockActive, true);
+  assert.equal(response.data.kioskHandoffCompleted, true);
+  assert.equal(
+    harness.requests.some((request) => request.cmd === "notify_visual_kiosk_ready"),
+    false,
+  );
+  assert.equal(
+    harness.requests.find((request) => request.cmd === "start_exam_session").payload.examMode,
+    undefined,
+  );
+  assert.equal(
+    traceEvents.some(
+      (event) =>
+        event.command === "EXAM_RUNNING_CONFIRMED emit" &&
+        event.state === SESSION_STATES.EXAM_RUNNING_CONFIRMED,
+    ),
+    true,
+  );
+
+  const requestsBeforeStatus = harness.requests.length;
+  const statusResponse = await runtime.handleCommand({
+    cmd: "get_protection_status",
+    payload: {},
+  });
+
+  assert.equal(statusResponse.ok, true);
+  assert.equal(statusResponse.data.mocked, true);
+  assert.equal(statusResponse.data.sessionState, SESSION_STATES.EXAM_RUNNING_CONFIRMED);
+  assert.equal(statusResponse.data.audioLockActive, true);
+  assert.equal(statusResponse.data.kioskHandoffCompleted, true);
+  assert.equal(harness.requests.length, requestsBeforeStatus);
+});
+
+test("desktop core runtime blocks non-explicit force restore while exam is active", async () => {
+  const harness = createTransportHarness();
+  const runtime = createDesktopCoreRuntime({
+    platform: "win32",
+    createSidecarTransport: harness.createSidecarTransport,
+  });
+
+  await runtime.start();
+  runtime.updateSnapshot({
+    sessionState: SESSION_STATES.EXAM_RUNNING_CONFIRMED,
+    safeExamMode: true,
+    examProtectionActive: true,
+    kioskActive: true,
+    keyboardHookActive: true,
+  });
+
+  const requestsBeforeRestore = harness.requests.length;
+  const response = await runtime.handleCommand({
+    cmd: "force_restore_desktop",
+    payload: {},
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.data.lockedNoop, true);
+  assert.equal(runtime.getSnapshot().sessionState, SESSION_STATES.EXAM_RUNNING_CONFIRMED);
+  assert.equal(runtime.getSnapshot().examProtectionActive, true);
+  assert.equal(runtime.getSnapshot().kioskActive, true);
+  assert.equal(harness.requests.length, requestsBeforeRestore);
+});
+
+test("desktop core runtime state lock blocks snapshot rollback after confirmation", async () => {
+  const harness = createTransportHarness();
+  const runtime = createDesktopCoreRuntime({
+    platform: "win32",
+    createSidecarTransport: harness.createSidecarTransport,
+  });
+
+  await runtime.start();
+  runtime.updateSnapshot({
+    sessionState: SESSION_STATES.EXAM_RUNNING_CONFIRMED,
+    audioLockActive: true,
+    safeExamMode: true,
+    examProtectionActive: true,
+    kioskActive: true,
+    keyboardHookActive: true,
+  }, {
+    allowAudioLockMutation: true,
+  });
+
+  runtime.updateSnapshot({
+    sessionState: SESSION_STATES.IDLE,
+    audioLockActive: false,
+    safeExamMode: false,
+    examProtectionActive: false,
+    kioskActive: false,
+    keyboardHookActive: false,
+  });
+
+  assert.equal(runtime.getSnapshot().sessionState, SESSION_STATES.EXAM_RUNNING_CONFIRMED);
+  assert.equal(runtime.getSnapshot().audioLockActive, true);
+  assert.equal(runtime.getSnapshot().safeExamMode, true);
+  assert.equal(runtime.getSnapshot().examProtectionActive, true);
+  assert.equal(runtime.getSnapshot().kioskActive, true);
+  assert.equal(runtime.getSnapshot().keyboardHookActive, true);
+});
+
+test("desktop core runtime canonicalizes legacy running state and broadcasts a cloneable snapshot", async () => {
+  const harness = createTransportHarness();
+  const runtime = createDesktopCoreRuntime({
+    platform: "win32",
+    createSidecarTransport: harness.createSidecarTransport,
+  });
+  let broadcastSnapshot = null;
+  const unsubscribe = runtime.onRuntimeChanged((snapshot) => {
+    broadcastSnapshot = snapshot;
+  });
+
+  await runtime.start();
+  runtime.updateSnapshot({
+    sessionState: SESSION_STATES.EXAM_RUNNING,
+    kioskHandoffCompleted: true,
+  });
+
+  assert.equal(
+    runtime.getSnapshot().sessionState,
+    SESSION_STATES.EXAM_RUNNING_CONFIRMED,
+  );
+  assert.equal(
+    broadcastSnapshot.sessionState,
+    SESSION_STATES.EXAM_RUNNING_CONFIRMED,
+  );
+  assert.doesNotThrow(() => structuredClone(broadcastSnapshot));
+  unsubscribe();
+});
+
+test("desktop core runtime keeps room snapshot stable while exit confirmation modal is open", async () => {
+  const harness = createTransportHarness();
+  const runtime = createDesktopCoreRuntime({
+    platform: "win32",
+    createSidecarTransport: harness.createSidecarTransport,
+  });
+
+  await runtime.start();
+  runtime.updateSnapshot({
+    sessionState: SESSION_STATES.EXAM_RUNNING,
+    audioLockActive: true,
+    safeExamMode: true,
+    examProtectionActive: true,
+    kioskActive: true,
+  }, {
+    allowAudioLockMutation: true,
+  });
+
+  const beginResponse = await runtime.handleCommand({
+    cmd: "begin_exam_exit_confirmation",
+    payload: { reason: "test_modal_open" },
+  });
+
+  assert.equal(beginResponse.ok, true);
+  assert.equal(beginResponse.data.exitInProgress, false);
+  assert.equal(beginResponse.data.stateTransitionLock, false);
+  assert.equal(beginResponse.data.uiInteractionLocked, false);
+  assert.equal(
+    runtime.getSnapshot().sessionState,
+    SESSION_STATES.EXAM_RUNNING_CONFIRMED,
+  );
+  assert.equal(runtime.getSnapshot().exitInProgress, false);
+  assert.equal(runtime.getSnapshot().stateTransitionLock, false);
+  assert.equal(runtime.getSnapshot().uiInteractionLocked, false);
+  assert.equal(runtime.getSnapshot().stateGovernorLockMode, null);
+  assert.equal(runtime.getAudioState(), "MUTE");
+
+  runtime.updateSnapshot({
+    sessionState: SESSION_STATES.IDLE,
+    safeExamMode: false,
+    examProtectionActive: false,
+    kioskActive: false,
+  });
+
+  assert.equal(
+    runtime.getSnapshot().sessionState,
+    SESSION_STATES.EXAM_RUNNING_CONFIRMED,
+  );
+  assert.equal(runtime.getSnapshot().examProtectionActive, true);
+
+  const cancelResponse = await runtime.handleCommand({
+    cmd: "cancel_exam_exit_confirmation",
+    payload: { reason: "test_modal_cancel" },
+  });
+
+  assert.equal(cancelResponse.ok, true);
+  assert.equal(
+    runtime.getSnapshot().sessionState,
+    SESSION_STATES.EXAM_RUNNING_CONFIRMED,
+  );
+  assert.equal(runtime.getSnapshot().exitInProgress, false);
+  assert.equal(runtime.getSnapshot().stateTransitionLock, false);
+  assert.equal(runtime.getSnapshot().uiInteractionLocked, false);
+  assert.equal(runtime.getSnapshot().audioLockActive, true);
+  assert.equal(runtime.getSnapshot().stateGovernorLockMode, null);
+});
+
+test("desktop core runtime governor exits through requested exiting and exited without IDLE rollback", async () => {
+  const harness = createTransportHarness();
+  const runtime = createDesktopCoreRuntime({
+    platform: "win32",
+    createSidecarTransport: harness.createSidecarTransport,
+  });
+
+  await runtime.start();
+  runtime.updateSnapshot({
+    sessionState: SESSION_STATES.EXAM_RUNNING,
+    audioLockActive: true,
+    safeExamMode: true,
+    examProtectionActive: true,
+    kioskActive: true,
+    keyboardHookActive: true,
+  }, {
+    allowAudioLockMutation: true,
+  });
+
+  await runtime.handleCommand({
+    cmd: "begin_exam_exit_confirmation",
+    payload: { reason: "test_modal_open" },
+  });
+
+  const response = await runtime.handleCommand({
+    cmd: "exit_exam_session",
+    payload: {
+      sessionId: "session-1",
+      reason: "user_exit",
+    },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(runtime.getSnapshot().sessionState, SESSION_STATES.EXITED);
+  assert.equal(runtime.getSnapshot().exitInProgress, false);
+  assert.equal(runtime.getSnapshot().stateTransitionLock, false);
+  assert.equal(runtime.getSnapshot().uiInteractionLocked, false);
+  assert.equal(runtime.getSnapshot().audioLockActive, false);
+  assert.equal(runtime.getSnapshot().stateGovernorLockMode, null);
+  assert.equal(runtime.getAudioState(), "RESTORE");
+  assert.equal(response.data.sessionState, SESSION_STATES.EXITED);
+  assert.equal(response.data.audioLockActive, false);
+
+  const exitRequestsBeforeDuplicate = harness.requests.filter(
+    (request) => request.cmd === "force_restore_desktop",
+  ).length;
+  const duplicateResponse = await runtime.handleCommand({
+    cmd: "force_restore_desktop",
+    payload: {
+      reason: "user_exit",
+      explicitExit: true,
+      userInitiated: true,
+    },
+  });
+  const exitRequestsAfterDuplicate = harness.requests.filter(
+    (request) => request.cmd === "force_restore_desktop",
+  ).length;
+
+  assert.equal(duplicateResponse.ok, true);
+  assert.equal(duplicateResponse.data.idempotentNoop, true);
+  assert.equal(runtime.getSnapshot().sessionState, SESSION_STATES.EXITED);
+  assert.equal(exitRequestsAfterDuplicate, exitRequestsBeforeDuplicate);
+});
+
+test("desktop core runtime force-cleans exit when Rust does not acknowledge", async () => {
+  const harness = createTransportHarness({
+    exitExamResponse: {
+      requestId: "exit-timeout",
+      ok: false,
+      data: null,
+      error: {
+        code: "IPC_FAILURE",
+        message: "Rust sidecar timed out while exiting.",
+      },
+    },
+  });
+  const runtime = createDesktopCoreRuntime({
+    platform: "win32",
+    createSidecarTransport: harness.createSidecarTransport,
+  });
+
+  await runtime.start();
+  runtime.updateSnapshot({
+    sessionState: SESSION_STATES.EXAM_RUNNING,
+    audioLockActive: true,
+    safeExamMode: true,
+    examProtectionActive: true,
+    kioskActive: true,
+  }, {
+    allowAudioLockMutation: true,
+  });
+
+  await runtime.handleCommand({
+    cmd: "begin_exam_exit_confirmation",
+    payload: { reason: "test_modal_open" },
+  });
+
+  const response = await runtime.handleCommand({
+    cmd: "exit_exam_session",
+    payload: {
+      sessionId: "session-1",
+      reason: "user_exit_timeout",
+    },
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.data.fallback, true);
+  assert.equal(response.data.rustAck, false);
+  assert.equal(runtime.getSnapshot().sessionState, SESSION_STATES.EXITED);
+  assert.equal(runtime.getSnapshot().exitInProgress, false);
+  assert.equal(runtime.getSnapshot().stateTransitionLock, false);
+  assert.equal(runtime.getSnapshot().uiInteractionLocked, false);
+  assert.equal(runtime.getSnapshot().audioLockActive, false);
+  assert.equal(
+    harness.requestOptions.find((entry) => entry.cmd === "exit_exam_session")
+      ?.options.timeoutMs,
+    5_000,
+  );
+});
+
+test("desktop core runtime preserves hard-block start failure from Rust", async () => {
+  const harness = createTransportHarness({
+    startExamResponse: {
+      requestId: "start-hard-block",
+      ok: false,
+      data: null,
+      error: {
+        code: "PROTECTION_FAILURE",
+        message: "Protected exam session is blocked by windbg.exe.",
+      },
+    },
+  });
+  const runtime = createDesktopCoreRuntime({
+    platform: "win32",
+    createSidecarTransport: harness.createSidecarTransport,
+  });
+
+  await runtime.start();
+  const response = await runtime.handleCommand({
+    cmd: "start_exam_session",
+    payload: { sessionId: "session-1", examId: "exam-1", dryRun: false },
+  });
+
+  assert.equal(response.ok, false);
+  assert.equal(response.error.code, "PROTECTION_FAILURE");
+  assert.equal(runtime.getSnapshot().kioskActive, false);
 });
 
 test("desktop core runtime discards a late monitor tick after exam restore", async () => {
@@ -735,13 +1502,90 @@ test("desktop core runtime discards a late monitor tick after exam restore", asy
     },
   });
   assert.equal(exitResponse.ok, true);
-  assert.equal(runtime.getSnapshot().sessionState, SESSION_STATES.IDLE);
+  assert.equal(runtime.getSnapshot().sessionState, SESSION_STATES.EXITED);
 
   runtimeTickDeferred.resolve();
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(runtime.getSnapshot().sessionState, SESSION_STATES.IDLE);
+  assert.equal(runtime.getSnapshot().sessionState, SESSION_STATES.EXITED);
   assert.equal(runtime.getSnapshot().examProtectionActive, false);
   assert.equal(runtime.getSnapshot().kioskActive, false);
+});
+
+test("desktop core runtime returns SAFE_NOOP for protection status while idle", async () => {
+  const harness = createTransportHarness();
+  const runtime = createDesktopCoreRuntime({
+    platform: "win32",
+    createSidecarTransport: harness.createSidecarTransport,
+  });
+
+  await runtime.start();
+  runtime.updateSnapshot({
+    sessionState: SESSION_STATES.IDLE,
+    examProtectionActive: true,
+    kioskActive: true,
+    runtimeMonitorActive: true,
+  });
+
+  const requestsBeforeStatus = harness.requests.length;
+  const response = await runtime.handleCommand({
+    cmd: "get_protection_status",
+    payload: {},
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.data.safeNoop, true);
+  assert.equal(response.data.skipReason, "protectionSkippedBecauseIdle");
+  assert.equal(response.data.sessionState, SESSION_STATES.IDLE);
+  assert.equal(harness.requests.length, requestsBeforeStatus);
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(
+    harness.requests.some((request) => request.cmd === "run_runtime_monitor_tick"),
+    false,
+  );
+});
+
+test("desktop core runtime blocks protection polling before atomic confirmation", async () => {
+  const harness = createTransportHarness();
+  const runtime = createDesktopCoreRuntime({
+    platform: "win32",
+    createSidecarTransport: harness.createSidecarTransport,
+  });
+
+  await runtime.start();
+  runtime.updateSnapshot({
+    sessionState: SESSION_STATES.STARTING_EXAM_SESSION,
+  });
+
+  const firstResponse = await runtime.handleCommand({
+    cmd: "get_protection_status",
+    payload: {},
+  });
+  const protectionStatusRequestsAfterFirstCall = harness.requests.filter(
+    (request) => request.cmd === "get_protection_status",
+  ).length;
+
+  const secondResponse = await runtime.handleCommand({
+    cmd: "get_protection_status",
+    payload: {},
+  });
+  const protectionStatusRequestsAfterSecondCall = harness.requests.filter(
+    (request) => request.cmd === "get_protection_status",
+  ).length;
+
+  assert.equal(firstResponse.ok, true);
+  assert.equal(firstResponse.data.debounced, undefined);
+  assert.equal(
+    firstResponse.data.skipReason,
+    "protectionSkippedBecauseSessionNotReady",
+  );
+  assert.equal(protectionStatusRequestsAfterFirstCall, 0);
+  assert.equal(secondResponse.ok, true);
+  assert.equal(
+    secondResponse.data.skipReason,
+    "protectionSkippedBecauseSessionNotReady",
+  );
+  assert.equal(protectionStatusRequestsAfterSecondCall, 0);
 });

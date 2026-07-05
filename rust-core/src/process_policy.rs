@@ -1,4 +1,5 @@
-use crate::policy_model::{list_contains, ExamPolicy};
+use crate::models::{ProcessInfo, ProcessPolicyMatch};
+use crate::policy_model::{list_contains, ExamPolicy, ProcessPolicyAction};
 
 pub const CATEGORY_BROWSER: &str = "browser";
 pub const CATEGORY_COMMUNICATION: &str = "communication";
@@ -61,14 +62,147 @@ pub fn categorize_process_name_with_policy(name: &str, policy: &ExamPolicy) -> V
 }
 
 pub fn is_process_prohibited(name: &str, policy: &ExamPolicy) -> bool {
-    if policy.is_explicitly_allowed(name) {
-        return false;
+    resolve_process_policy_name(name, policy)
+        .map(|decision| decision.action != ProcessPolicyAction::Ignore.as_str())
+        .unwrap_or(false)
+}
+
+pub fn evaluate_process_policy(
+    processes: &[ProcessInfo],
+    policy: &ExamPolicy,
+) -> Vec<ProcessPolicyMatch> {
+    let mut matches = processes
+        .iter()
+        .filter_map(|process| resolve_process_policy(process, policy))
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| {
+        action_priority(&right.action)
+            .cmp(&action_priority(&left.action))
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.pid.cmp(&right.pid))
+    });
+    matches
+}
+
+pub fn resolve_process_policy(
+    process: &ProcessInfo,
+    policy: &ExamPolicy,
+) -> Option<ProcessPolicyMatch> {
+    resolve_process_policy_name(&process.name, policy).map(|decision| ProcessPolicyMatch {
+        pid: process.pid,
+        name: process.name.clone(),
+        executable_path: process.executable_path.clone(),
+        creation_time_ms: process.creation_time_ms,
+        category: decision.category,
+        action: decision.action,
+        severity: decision.severity,
+        allow_exam_start: decision.allow_exam_start,
+        attempt_terminate: decision.attempt_terminate,
+        audit_required: decision.audit_required,
+    })
+}
+
+#[derive(Debug, Clone)]
+struct ProcessPolicyDecision {
+    category: String,
+    action: String,
+    severity: String,
+    allow_exam_start: bool,
+    attempt_terminate: bool,
+    audit_required: bool,
+}
+
+fn resolve_process_policy_name(
+    name: &str,
+    policy: &ExamPolicy,
+) -> Option<ProcessPolicyDecision> {
+    if policy.is_explicitly_blocked(name) {
+        return Some(decision(
+            CATEGORY_POLICY_BLOCKED,
+            ProcessPolicyAction::HardBlock,
+            "critical",
+        ));
     }
-    policy.is_explicitly_blocked(name)
-        || list_contains(&policy.remote_processes, name)
-        || list_contains(&policy.screen_capture_processes, name)
-        || list_contains(&policy.debug_processes, name)
-        || (!policy.allow_vm && list_contains(&policy.virtual_machine_processes, name))
+
+    if let Some(rule) = policy.process_rule_for(name) {
+        return Some(ProcessPolicyDecision {
+            category: rule.category.clone(),
+            action: rule.action.as_str().to_string(),
+            severity: rule.severity.clone(),
+            allow_exam_start: rule.allow_exam_start,
+            attempt_terminate: rule.attempt_terminate,
+            audit_required: rule.audit_required,
+        });
+    }
+
+    if policy.is_explicitly_allowed(name) {
+        return None;
+    }
+
+    if list_contains(&policy.debug_processes, name) {
+        return Some(decision(
+            CATEGORY_DEBUG_TOOLS,
+            ProcessPolicyAction::HardBlock,
+            "critical",
+        ));
+    }
+    if !policy.allow_vm && list_contains(&policy.virtual_machine_processes, name) {
+        return Some(decision(
+            CATEGORY_VIRTUAL_MACHINE,
+            ProcessPolicyAction::HardBlock,
+            "high",
+        ));
+    }
+
+    let is_remote = list_contains(&policy.remote_processes, name);
+    let is_capture = list_contains(&policy.screen_capture_processes, name);
+    if is_remote || is_capture {
+        let category = match (is_remote, is_capture) {
+            (true, true) => "remote-control+screen-capture",
+            (true, false) => "remote-control",
+            (false, true) => "screen-capture",
+            (false, false) => unreachable!(),
+        };
+        return Some(decision(
+            category,
+            ProcessPolicyAction::IsolateAndProtect,
+            "high",
+        ));
+    }
+
+    None
+}
+
+fn decision(
+    category: &str,
+    action: ProcessPolicyAction,
+    severity: &str,
+) -> ProcessPolicyDecision {
+    ProcessPolicyDecision {
+        category: category.to_string(),
+        action: action.as_str().to_string(),
+        severity: severity.to_string(),
+        allow_exam_start: !action.blocks_exam_start(),
+        attempt_terminate: matches!(
+            action,
+            ProcessPolicyAction::AttemptTerminateThenBlock
+                | ProcessPolicyAction::AttemptTerminateThenContinue
+        ),
+        audit_required: !matches!(action, ProcessPolicyAction::Ignore),
+    }
+}
+
+fn action_priority(action: &str) -> u8 {
+    match action {
+        "hardBlock" => 7,
+        "attemptTerminateThenBlock" => 6,
+        "attemptTerminateThenContinue" => 5,
+        "isolateAndProtect" => 4,
+        "continueAndAudit" => 3,
+        "warnOnly" => 2,
+        "ignore" => 1,
+        _ => 0,
+    }
 }
 
 pub fn contains_vm_vendor(value: &str) -> bool {
@@ -100,9 +234,10 @@ fn push_category_if_matches(
 mod tests {
     use super::{
         categorize_process_name, categorize_process_name_with_policy, contains_vm_vendor,
-        is_process_prohibited, CATEGORY_COMMUNICATION,
+        is_process_prohibited, resolve_process_policy, CATEGORY_COMMUNICATION,
         CATEGORY_REMOTE_DESKTOP, CATEGORY_SCREEN_CAPTURE,
     };
+    use crate::models::ProcessInfo;
 
     #[test]
     fn classification_is_case_insensitive_and_supports_multiple_categories() {
@@ -159,5 +294,48 @@ mod tests {
             .iter()
             .any(|entry| entry == CATEGORY_REMOTE_DESKTOP));
         assert!(!is_process_prohibited("custom-remote.exe", &policy));
+    }
+
+    #[test]
+    fn remote_and_capture_defaults_are_allowed_under_isolation() {
+        let policy = crate::policy_model::ExamPolicy::strict_builtin();
+        for name in ["AnyDesk.exe", "parsecd.exe", "obs64.exe"] {
+            let decision = resolve_process_policy(
+                &ProcessInfo {
+                    pid: 42,
+                    name: name.to_string(),
+                    executable_path: None,
+                    creation_time_ms: Some(1),
+                    memory_mb: 1,
+                    categories: Vec::new(),
+                },
+                &policy,
+            )
+            .unwrap();
+
+            assert!(decision.allow_exam_start);
+            assert!(!decision.attempt_terminate);
+            assert_eq!(decision.action, "isolateAndProtect");
+        }
+    }
+
+    #[test]
+    fn debugger_defaults_remain_hard_blocked() {
+        let policy = crate::policy_model::ExamPolicy::strict_builtin();
+        let decision = resolve_process_policy(
+            &ProcessInfo {
+                pid: 43,
+                name: "windbg.exe".to_string(),
+                executable_path: None,
+                creation_time_ms: Some(1),
+                memory_mb: 1,
+                categories: Vec::new(),
+            },
+            &policy,
+        )
+        .unwrap();
+
+        assert!(!decision.allow_exam_start);
+        assert_eq!(decision.action, "hardBlock");
     }
 }

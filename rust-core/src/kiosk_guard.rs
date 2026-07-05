@@ -13,7 +13,7 @@ use crate::mouse_guard::MouseGuardMutationResult;
 use crate::taskbar_guard::TaskbarMutationResult;
 
 use crate::session_guard::{
-    SESSION_STATE_ENTERING_KIOSK, SESSION_STATE_EXAM_RUNNING, SESSION_STATE_EXITING_KIOSK,
+    SESSION_STATE_ENTERING_KIOSK, SESSION_STATE_EXITING_KIOSK,
     SESSION_STATE_PROTECTION_ACTIVE, SESSION_STATE_RESTORING_DESKTOP,
 };
 
@@ -178,15 +178,15 @@ pub fn build_enter_kiosk_result(
         ),
         build_log_line(
             now_ms + 10,
-            "success",
-            SESSION_STATE_EXAM_RUNNING,
-            "Exam session is now running with the strict protection layer enabled.",
+            "info",
+            crate::session_guard::SESSION_STATE_ENTERING_KIOSK,
+            "Native guards applied successfully. Waiting for visual kiosk handoff completion.",
         ),
     ];
 
     ProtectionTransitionResult {
         transitioned_at: now_ms,
-        session_state: SESSION_STATE_EXAM_RUNNING.to_string(),
+        session_state: crate::session_guard::SESSION_STATE_ENTERING_KIOSK.to_string(),
         protection_status,
         restored_desktop: None,
         log_lines,
@@ -452,7 +452,7 @@ mod tests {
             &accessibility_result(true, true, "Accessibility hotkeys disabled."),
         );
 
-        assert_eq!(result.session_state, "EXAM_RUNNING");
+        assert_eq!(result.session_state, "ENTERING_KIOSK");
         assert!(result.protection_status.exam_protection_active);
         assert!(result.protection_status.kiosk_active);
         assert!(result.protection_status.overlay_active);

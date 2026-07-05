@@ -20,6 +20,8 @@ const CORE_ERROR_CODES = {
   DEVICE_KEY_FAILURE: "DEVICE_KEY_FAILURE",
   EXAM_KEY_FAILURE: "EXAM_KEY_FAILURE",
   EXAM_KEY_REQUIRED: "EXAM_KEY_REQUIRED",
+  AUDIT_FAILURE: "AUDIT_FAILURE",
+  AUDIT_TAMPERED: "AUDIT_TAMPERED",
 };
 
 const SESSION_STATES = {
@@ -33,12 +35,17 @@ const SESSION_STATES = {
   LOAD_POLICY: "LOAD_POLICY",
   ENV_CHECK: "ENV_CHECK",
   READY: "READY",
+  PREFLIGHT: "PREFLIGHT",
   PREFLIGHT_READY: "PREFLIGHT_READY",
   STARTING_EXAM_SESSION: "STARTING_EXAM_SESSION",
   SAVING_DESKTOP_STATE: "SAVING_DESKTOP_STATE",
   ENTERING_KIOSK: "ENTERING_KIOSK",
+  EXAM_RUNNING_CONFIRMED: "EXAM_RUNNING_CONFIRMED",
   PROTECTION_ACTIVE: "PROTECTION_ACTIVE",
   EXAM_RUNNING: "EXAM_RUNNING",
+  EXAM_EXIT_REQUESTED: "EXAM_EXIT_REQUESTED",
+  EXAM_EXITING: "EXAM_EXITING",
+  EXITED: "EXITED",
   PAUSED: "PAUSED",
   RECOVERY_REQUIRED: "RECOVERY_REQUIRED",
   EXIT_REQUESTED: "EXIT_REQUESTED",
@@ -70,14 +77,23 @@ const SAFE_EXAM_COMMANDS = new Set([
   "preflight_kill",
   "run_preflight",
   "start_exam_session",
+  "begin_exam_exit_confirmation",
+  "cancel_exam_exit_confirmation",
   "exit_exam_session",
   "force_restore_desktop",
+  "request_emergency_restore",
   "sync_display_topology",
   "run_runtime_monitor_tick",
   "get_protection_status",
   "get_policy_status",
+  "get_audit_status",
+  "verify_audit_chain",
+  "drain_audit_upload_batch",
+  "ack_audit_upload_batch",
+  "record_audit_upload_failure",
   "get_exam_device_identity",
   "sign_exam_challenge",
+  "sign_audit_upload",
   "compatibility_check",
   "verify_config",
   "load_policy",
@@ -224,6 +240,36 @@ function normalizeRuntimeEvents(value) {
     }));
 }
 
+function normalizeAuditHealth(value) {
+  const audit = value && typeof value === "object" ? value : {};
+  return {
+    auditEnabled: Boolean(audit.auditEnabled),
+    auditHealth: normalizeString(audit.auditHealth, "disabled"),
+    auditQueueDepth: normalizeNumber(audit.auditQueueDepth, 0),
+    pendingUploads: normalizeNumber(audit.pendingUploads, 0),
+    failedUploads: normalizeNumber(audit.failedUploads, 0),
+    lastSuccessfulUpload: normalizeNumber(audit.lastSuccessfulUpload, null),
+    lastFailure: normalizeString(audit.lastFailure, null),
+    hashChainStatus: normalizeString(audit.hashChainStatus, "unknown"),
+    syncLatencyMs: normalizeNumber(audit.syncLatencyMs, null),
+  };
+}
+
+function normalizeEmergencyRestore(value) {
+  const restore = value && typeof value === "object" ? value : {};
+  return {
+    emergencyRestoreWidgetVisible: Boolean(restore.emergencyRestoreWidgetVisible),
+    emergencyRestoreWidgetState: normalizeString(restore.emergencyRestoreWidgetState, "hidden"),
+    lastEmergencyRestoreRequestAt: normalizeNumber(restore.lastEmergencyRestoreRequestAt, null),
+    lastEmergencyRestoreResult: normalizeString(restore.lastEmergencyRestoreResult, null),
+    emergencyRestoreAttemptCount: normalizeNumber(restore.emergencyRestoreAttemptCount, 0),
+    emergencyRestoreLastError: normalizeString(restore.emergencyRestoreLastError, null),
+    widgetId: normalizeString(restore.widgetId, null),
+    correlationId: normalizeString(restore.correlationId, null),
+    requireHoldMs: normalizeNumber(restore.requireHoldMs, 2000),
+  };
+}
+
 function normalizeSummary(value) {
   if (!value || typeof value !== "object") {
     return null;
@@ -294,6 +340,14 @@ function normalizeGuardHealth(snapshot) {
 function createDesktopRuntimeSnapshot(snapshot = {}) {
   const runtime = snapshot.runtime === "web" ? "web" : "electron";
   const isDesktop = Boolean(snapshot.isDesktop ?? runtime === "electron");
+  const normalizedSessionState = normalizeString(
+    snapshot.sessionState,
+    SESSION_STATES.INIT,
+  );
+  const sessionState =
+    normalizedSessionState === SESSION_STATES.EXAM_RUNNING
+      ? SESSION_STATES.EXAM_RUNNING_CONFIRMED
+      : normalizedSessionState;
 
   return {
     runtime,
@@ -304,9 +358,33 @@ function createDesktopRuntimeSnapshot(snapshot = {}) {
     isDesktop,
     platform: normalizeString(snapshot.platform, isDesktop ? "win32" : "unknown"),
     safeExamMode: Boolean(snapshot.safeExamMode),
+    examMode: normalizeString(snapshot.examMode, null),
+    audioLockActive:
+      sessionState === SESSION_STATES.EXAM_RUNNING_CONFIRMED ||
+      Boolean(snapshot.audioLockActive),
+    exitInProgress: Boolean(snapshot.exitInProgress),
+    stateTransitionLock: Boolean(snapshot.stateTransitionLock),
+    uiInteractionLocked: Boolean(snapshot.uiInteractionLocked),
+    stateGovernorId: normalizeString(snapshot.stateGovernorId, null),
+    stateGovernorReady: Boolean(snapshot.stateGovernorReady),
+    stateGovernorSafeMode: Boolean(snapshot.stateGovernorSafeMode),
+    stateGovernorProductionGatePassed: Boolean(snapshot.stateGovernorProductionGatePassed),
+    stateGovernorSequenceId: normalizeNumber(snapshot.stateGovernorSequenceId, 0),
+    stateGovernorLockMode:
+      snapshot.stateGovernorLockMode === "EXIT_LOCK"
+        ? "EXIT_LOCK"
+        : null,
+    stateGovernorEventQueueLength: normalizeNumber(
+      snapshot.stateGovernorEventQueueLength,
+      0,
+    ),
+    stateGovernorLastValidation: snapshot.stateGovernorLastValidation && typeof snapshot.stateGovernorLastValidation === "object"
+      ? snapshot.stateGovernorLastValidation
+      : null,
+    kioskHandoffCompleted: Boolean(snapshot.kioskHandoffCompleted),
     nativeCoreConnected: Boolean(snapshot.nativeCoreConnected),
     coreVersion: normalizeString(snapshot.coreVersion, null),
-    sessionState: normalizeString(snapshot.sessionState, SESSION_STATES.INIT),
+    sessionState,
     lastCoreHeartbeat: normalizeNumber(snapshot.lastCoreHeartbeat, null),
     precheckCollectedAt: normalizeNumber(snapshot.precheckCollectedAt, null),
     precheckAvailable: Boolean(snapshot.precheckAvailable),
@@ -329,6 +407,8 @@ function createDesktopRuntimeSnapshot(snapshot = {}) {
     preflightCanEnterExam:
       typeof snapshot.preflightCanEnterExam === "boolean" ? snapshot.preflightCanEnterExam : null,
     preflightPrimaryReasonCode: normalizeString(snapshot.preflightPrimaryReasonCode, null),
+    runtimeRiskLevel:
+      snapshot.runtimeRiskLevel === "elevated" ? "elevated" : "normal",
     examProtectionActive: Boolean(snapshot.examProtectionActive),
     protectionDryRun: Boolean(snapshot.protectionDryRun),
     kioskActive: Boolean(snapshot.kioskActive),
@@ -356,12 +436,14 @@ function createDesktopRuntimeSnapshot(snapshot = {}) {
     policySource: normalizeString(snapshot.policySource, null),
     policyDigestSha256: normalizeString(snapshot.policyDigestSha256, null),
     signedPolicyRequired: Boolean(snapshot.signedPolicyRequired),
+    emergencyRestore: normalizeEmergencyRestore(snapshot.emergencyRestore),
     guardHealth: normalizeGuardHealth(snapshot),
     runtimeTelemetry: normalizeRuntimeTelemetry(snapshot.runtimeTelemetry),
     processWatcher: normalizeProcessWatcher(snapshot.processWatcher),
     processWatcherProducer: normalizeProcessWatcherProducer(snapshot.processWatcherProducer),
     runtimeStateEngine: normalizeRuntimeStateEngine(snapshot.runtimeStateEngine),
     runtimeEvents: normalizeRuntimeEvents(snapshot.runtimeEvents),
+    audit: normalizeAuditHealth(snapshot.audit),
   };
 }
 

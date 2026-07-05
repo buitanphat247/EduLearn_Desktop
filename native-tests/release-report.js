@@ -10,6 +10,7 @@ function productionVerdict({
   performanceSoakPassed = false,
   benchmarkEvidencePassed = false,
   nativeEtwEvidencePassed = false,
+  emergencyRestoreEvidencePassed = false,
   auditSyncReady = false,
   lintPassed = false,
   installerSigned = false,
@@ -29,6 +30,7 @@ function productionVerdict({
     performanceSoakPassed &&
     benchmarkEvidencePassed &&
     nativeEtwEvidencePassed &&
+    emergencyRestoreEvidencePassed &&
     auditSyncReady &&
     lintPassed &&
     installerSigned &&
@@ -53,6 +55,7 @@ function releaseGateStatus({
   performance = {},
   benchmark = {},
   processProducer = {},
+  emergencyRestore = {},
   audit = {},
   lint = {},
   installer = {},
@@ -68,6 +71,7 @@ function releaseGateStatus({
     performanceSoakPassed: Boolean(performance.soakPassed),
     benchmarkEvidencePassed: Boolean(benchmark.evidencePassed),
     nativeEtwEvidencePassed: Boolean(processProducer.nativeEtwEvidencePassed),
+    emergencyRestoreEvidencePassed: Boolean(emergencyRestore.evidencePassed),
     auditSyncReady: Boolean(audit.syncReady),
     lintPassed: Boolean(lint.passed),
     installerSigned: Boolean(installer.signed),
@@ -88,6 +92,7 @@ function buildReleaseReport({
   performance = {},
   benchmark = {},
   processProducer = {},
+  emergencyRestore = {},
   audit = {},
   lint = {},
   installer = {},
@@ -103,6 +108,7 @@ function buildReleaseReport({
     performance,
     benchmark,
     processProducer,
+    emergencyRestore,
     audit,
     lint,
     installer,
@@ -130,6 +136,7 @@ function buildReleaseReport({
     performance,
     benchmark,
     processProducer,
+    emergencyRestore,
     audit,
     lint,
     installer,

@@ -1,3 +1,5 @@
+const fs = require("fs");
+const path = require("path");
 const { app, BrowserWindow, globalShortcut } = require("electron");
 const { createMainWindow } = require("./window");
 const { handleDeepLink, registerProtocol } = require("./deeplink");
@@ -6,6 +8,12 @@ const { createDesktopCoreRuntime } = require("./core-runtime");
 const { createDesktopProtectionController } = require("./protection-controller");
 const { DESKTOP_CORE_CHANNELS } = require("./contracts/safe-exam");
 const { createWatchdogHeartbeat } = require("./watchdog-heartbeat");
+const { logger } = require("./logger");
+const { createExamGuardTracer } = require("./exam-guard-trace");
+const { createAudioGuard } = require("./audio-guard");
+
+// Bootstrap logger immediately
+logger.bootstrap();
 
 // Electron is usually DPI-aware on Windows, but this makes the intent explicit
 // for the exam shell before any BrowserWindow is created.
@@ -21,12 +29,20 @@ const protectionController = createDesktopProtectionController({
   getMainWindow: () => mainWindow,
   globalShortcut,
 });
+const examGuardTracer = createExamGuardTracer({
+  baseDir: process.cwd(),
+});
 const desktopCoreRuntime = createDesktopCoreRuntime({
   platform: process.platform,
   protectionController,
+  examGuardTracer,
 });
 const watchdogHeartbeat = createWatchdogHeartbeat({
   getRuntimeSnapshot: () => desktopCoreRuntime.getSnapshot(),
+});
+const audioGuard = createAudioGuard({
+  getMainWindow: () => mainWindow,
+  examGuardTracer,
 });
 // Keep exactly one desktop shell alive so OAuth/deep-link callbacks always
 // return to the existing app window instead of spawning a second shell.
@@ -88,15 +104,41 @@ function setupDeepLinkHandling() {
 
 function createAppWindow() {
   mainWindow = createMainWindow();
+  mainWindow.webContents.on("did-start-loading", () => {
+    examGuardTracer.recordLoop({
+      action: "renderer_reload_triggered",
+      decision: "accepted",
+      state: desktopCoreRuntime.getSnapshot().sessionState,
+      reason: "did-start-loading",
+    });
+  });
+  mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription) => {
+    examGuardTracer.recordLoop({
+      action: "renderer_reload_failed",
+      decision: "accepted",
+      state: desktopCoreRuntime.getSnapshot().sessionState,
+      reason: `${errorCode}:${errorDescription}`,
+    });
+  });
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    examGuardTracer.recordLoop({
+      action: "renderer_process_gone",
+      decision: details?.reason ?? "unknown",
+      state: desktopCoreRuntime.getSnapshot().sessionState,
+      reason: details?.exitCode != null ? String(details.exitCode) : "no_exit_code",
+    });
+  });
   mainWindow.webContents.on("did-finish-load", () => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       return;
     }
 
-    mainWindow.webContents.send(
-      DESKTOP_CORE_CHANNELS.RUNTIME_CHANGED,
-      desktopCoreRuntime.getSnapshot(),
+    const snapshot = desktopCoreRuntime.getSnapshot();
+    audioGuard.handleRuntimeChanged(
+      snapshot,
+      desktopCoreRuntime.getAudioState(),
     );
+    mainWindow.webContents.send(DESKTOP_CORE_CHANNELS.RUNTIME_CHANGED, snapshot);
   });
   return mainWindow;
 }
@@ -130,6 +172,7 @@ app.whenReady().then(() => {
   });
   registerDesktopCoreIpc({
     desktopCoreRuntime,
+    examGuardTracer,
   });
   setupDeepLinkHandling();
   registerDevRestoreShortcut();
@@ -138,12 +181,43 @@ app.whenReady().then(() => {
   });
 
   desktopCoreRuntime.onRuntimeChanged((snapshot) => {
+    logger.setSessionContext(snapshot.sessionId, snapshot.sessionState);
     if (!mainWindow || mainWindow.isDestroyed()) {
       return;
     }
 
+    audioGuard.handleRuntimeChanged(
+      snapshot,
+      desktopCoreRuntime.getAudioState(),
+    );
     mainWindow.webContents.send(DESKTOP_CORE_CHANNELS.RUNTIME_CHANGED, snapshot);
   });
+
+  const watchedRoots = [
+    __dirname,
+    path.resolve(__dirname, "..", "..", "client", "app", "(root)", "virtual-exam"),
+    path.resolve(__dirname, "..", "..", "client", "lib", "runtime"),
+  ];
+  for (const watchedRoot of watchedRoots) {
+    try {
+      fs.watch(watchedRoot, { recursive: true }, (_eventType, filename) => {
+        const changedPath = filename ? path.join(watchedRoot, filename) : watchedRoot;
+        const accepted = !/node_modules|\.next|logs|demo|mock/i.test(changedPath);
+        examGuardTracer.recordWatcher({
+          path: changedPath,
+          triggerAction: accepted ? "reload_possible" : "ignored",
+          accepted,
+        });
+      });
+    } catch (error) {
+      examGuardTracer.recordWatcher({
+        path: watchedRoot,
+        triggerAction: "watch_failed",
+        accepted: false,
+        source: error instanceof Error ? error.message : "watch_error",
+      });
+    }
+  }
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -169,11 +243,13 @@ app.whenReady().then(() => {
         globalShortcut.unregisterAll();
         await desktopCoreRuntime.stop();
         watchdogHeartbeat.stop();
+        audioGuard.dispose();
       })
       .catch((error) => {
         console.error("[desktop] Failed to stop Rust sidecar cleanly", error);
       })
       .finally(() => {
+        examGuardTracer.printSummary();
         isQuitCleanupCompleted = true;
         isQuitCleanupInProgress = false;
         app.quit();

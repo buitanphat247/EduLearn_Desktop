@@ -84,6 +84,19 @@
       "expected": "Dedicated desktop is created before Electron, switched during exam, restored and destroyed after exit or crash."
     },
     {
+      "id": "emergency-restore-validation",
+      "title": "Emergency Restore Validation",
+      "requiredEvidence": [
+        "runtime-snapshot",
+        "desktop-telemetry",
+        "fault-injection-log",
+        "restore-state-before",
+        "restore-state-after",
+        "acceptance-decision"
+      ],
+      "expected": "Emergency restore widget is a native bootstrapper-owned control, appears only during kiosk or desktop isolation, requires hold-to-restore through real native input, calls the trusted restore pipeline, writes audit events, survives renderer or Rust crashes through bootstrapper fallback and disappears after restore."
+    },
+    {
       "id": "service-validation",
       "title": "Service Validation",
       "requiredEvidence": [

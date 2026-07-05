@@ -1,6 +1,8 @@
-use crate::models::{ProcessInfo, ProcessRemediationAction, ProcessRemediationReport};
+use crate::models::{
+    ProcessInfo, ProcessPolicyMatch, ProcessRemediationAction, ProcessRemediationReport,
+};
 use crate::policy_model::ExamPolicy;
-use crate::process_policy::is_process_prohibited;
+use crate::process_policy::{evaluate_process_policy, resolve_process_policy};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -20,6 +22,13 @@ pub struct PreflightKillReport {
     pub retry_count: usize,
     pub attempt_count: usize,
     pub failures: Vec<String>,
+    pub actions: Vec<ProcessRemediationAction>,
+    pub hard_blocked_processes: Vec<ProcessPolicyMatch>,
+    pub terminate_required_processes: Vec<ProcessPolicyMatch>,
+    pub continue_with_audit_processes: Vec<ProcessPolicyMatch>,
+    pub isolate_and_protect_processes: Vec<ProcessPolicyMatch>,
+    pub warnings: Vec<ProcessPolicyMatch>,
+    pub runtime_risk_level: String,
 }
 
 #[derive(Debug, Default)]
@@ -40,75 +49,103 @@ impl RuntimeProcessRemediator {
     where
         F: FnMut(u32) -> Result<(), String>,
     {
-        let prohibited = collect_policy_prohibited_processes(processes, policy);
-        if !policy.instant_kill {
-            let actions = prohibited
-                .into_iter()
-                .map(|process| ProcessRemediationAction {
-                    pid: process.pid,
-                    name: process.name,
-                    category: "signedPolicy".to_string(),
-                    first_detected_at: now_ms,
-                    deadline_at: now_ms,
-                    action: "report".to_string(),
-                    status: "detected".to_string(),
-                    detail: "Process is prohibited, but instantKill is disabled by policy."
-                        .to_string(),
-                })
-                .collect::<Vec<_>>();
-            return ProcessRemediationReport {
-                grace_period_ms: 0,
-                pending_termination_count: actions.len(),
-                terminated_count: 0,
-                failed_count: 0,
-                actions,
-            };
-        }
-
-        self.remediate_processes_with(
-            now_ms,
-            prohibited,
-            "signedPolicy",
-            terminate_process,
-        )
+        let policy_matches = evaluate_process_policy(processes, policy);
+        self.remediate_policy_matches_with(now_ms, policy_matches, policy, terminate_process)
     }
 
-    fn remediate_processes_with<F>(
+    fn remediate_policy_matches_with<F>(
         &mut self,
         now_ms: u64,
-        processes: Vec<ProcessInfo>,
-        category: &str,
+        policy_matches: Vec<ProcessPolicyMatch>,
+        policy: &ExamPolicy,
         mut terminate_process: F,
     ) -> ProcessRemediationReport
     where
         F: FnMut(u32) -> Result<(), String>,
     {
         let mut actions = Vec::new();
-        for process in processes {
+        for process in policy_matches {
+            if !process.attempt_terminate {
+                let (status, detail) = if process.action == "hardBlock" {
+                    (
+                        "blocked",
+                        "A hard-blocked process appeared during the protected session.",
+                    )
+                } else if process.action == "isolateAndProtect" {
+                    (
+                        "allowed-under-isolation",
+                        "Process remains active under kiosk isolation and best-effort capture protection.",
+                    )
+                } else {
+                    (
+                        "allowed-with-audit",
+                        "Process remains active under signed continue-and-audit policy.",
+                    )
+                };
+                actions.push(ProcessRemediationAction {
+                    pid: process.pid,
+                    name: process.name,
+                    category: process.category,
+                    first_detected_at: now_ms,
+                    deadline_at: now_ms,
+                    action: process.action,
+                    status: status.to_string(),
+                    detail: detail.to_string(),
+                });
+                continue;
+            }
+
+            if !policy.instant_kill {
+                actions.push(ProcessRemediationAction {
+                    pid: process.pid,
+                    name: process.name,
+                    category: process.category,
+                    first_detected_at: now_ms,
+                    deadline_at: now_ms,
+                    action: process.action,
+                    status: "detected".to_string(),
+                    detail: "Termination is required by the process rule, but instantKill is disabled."
+                        .to_string(),
+                });
+                continue;
+            }
+
             match terminate_process(process.pid) {
                 Ok(()) => actions.push(ProcessRemediationAction {
                     pid: process.pid,
                     name: process.name,
-                    category: category.to_string(),
+                    category: process.category,
                     first_detected_at: now_ms,
                     deadline_at: now_ms,
-                    action: "terminate".to_string(),
+                    action: process.action,
                     status: "terminated".to_string(),
-                    detail: "Prohibited process was terminated immediately by runtime policy."
-                        .to_string(),
+                    detail: "Process was terminated by its explicit signed process rule.".to_string(),
                 }),
-                Err(error) => actions.push(ProcessRemediationAction {
-                    pid: process.pid,
-                    name: process.name,
-                    category: category.to_string(),
-                    first_detected_at: now_ms,
-                    deadline_at: now_ms,
-                    action: "terminate".to_string(),
-                    status: "failed".to_string(),
-                    detail: format!(
-                        "Immediate termination of prohibited process failed: {error}"
-                    ),
-                }),
+                Err(error) => {
+                    let continue_after_failure =
+                        process.action == "attemptTerminateThenContinue";
+                    actions.push(ProcessRemediationAction {
+                        pid: process.pid,
+                        name: process.name,
+                        category: process.category,
+                        first_detected_at: now_ms,
+                        deadline_at: now_ms,
+                        action: process.action,
+                        status: if continue_after_failure {
+                            "allowed-after-termination-failure".to_string()
+                        } else {
+                            "failed".to_string()
+                        },
+                        detail: format!(
+                            "Rule-authorized process termination failed: {error}. {}",
+                            if continue_after_failure {
+                                "The signed rule permits the exam to continue with audit."
+                            } else {
+                                "The signed rule requires fail-closed recovery."
+                            }
+                        ),
+                    })
+                }
             }
         }
         let terminated_count = actions
@@ -119,9 +156,17 @@ impl RuntimeProcessRemediator {
             .iter()
             .filter(|action| action.status == "failed")
             .count();
+        let pending_termination_count = actions
+            .iter()
+            .filter(|action| {
+                action.status == "blocked"
+                    || (action.status == "detected"
+                        && action.action == "attemptTerminateThenBlock")
+            })
+            .count();
         ProcessRemediationReport {
             grace_period_ms: DEFAULT_PROCESS_REMEDIATION_GRACE_PERIOD_MS,
-            pending_termination_count: 0,
+            pending_termination_count,
             terminated_count,
             failed_count,
             actions,
@@ -184,17 +229,17 @@ impl RuntimeProcessRemediator {
     }
 }
 
-fn collect_policy_prohibited_processes(
+fn collect_policy_processes(
     processes: &[ProcessInfo],
     policy: &ExamPolicy,
 ) -> Vec<ProcessInfo> {
-    let mut prohibited = BTreeMap::<u32, ProcessInfo>::new();
+    let mut selected = BTreeMap::<u32, ProcessInfo>::new();
     for process in processes {
-        if is_process_prohibited(&process.name, policy) {
-            prohibited.insert(process.pid, process.clone());
+        if resolve_process_policy(process, policy).is_some() {
+            selected.insert(process.pid, process.clone());
         }
     }
-    prohibited.into_values().collect()
+    selected.into_values().collect()
 }
 
 pub fn preflight_remediate_policy_processes_using<Scan, Terminate>(
@@ -227,39 +272,67 @@ where
     Terminate: FnMut(u32) -> Result<(), String>,
     Sleep: FnMut(),
 {
-    let mut remaining_processes =
-        collect_policy_prohibited_processes(&scan_processes(), policy);
+    let mut remaining_processes = collect_policy_processes(&scan_processes(), policy);
     let mut killed_processes = BTreeMap::<u32, String>::new();
     let mut failures = BTreeMap::<u32, String>::new();
+    let mut actions = Vec::new();
     let mut attempt_count = 0;
 
-    while !remaining_processes.is_empty() && attempt_count < max_attempts {
+    let mut termination_targets = collect_termination_targets(&remaining_processes, policy);
+    while !termination_targets.is_empty() && attempt_count < max_attempts {
         attempt_count += 1;
-        for process in &remaining_processes {
+        for process in &termination_targets {
+            let policy_match = resolve_process_policy(process, policy);
             match terminate_process(process.pid) {
                 Ok(()) => {
                     killed_processes.insert(process.pid, process.name.clone());
                     failures.remove(&process.pid);
+                    if let Some(policy_match) = policy_match {
+                        actions.push(ProcessRemediationAction {
+                            pid: process.pid,
+                            name: process.name.clone(),
+                            category: policy_match.category,
+                            first_detected_at: 0,
+                            deadline_at: 0,
+                            action: policy_match.action,
+                            status: "terminated".to_string(),
+                            detail: "Policy-authorized preflight termination succeeded.".to_string(),
+                        });
+                    }
                 }
                 Err(error) => {
                     failures.insert(
                         process.pid,
                         format!("{} (pid {}): {error}", process.name, process.pid),
                     );
+                    if let Some(policy_match) = policy_match {
+                        actions.push(ProcessRemediationAction {
+                            pid: process.pid,
+                            name: process.name.clone(),
+                            category: policy_match.category,
+                            first_detected_at: 0,
+                            deadline_at: 0,
+                            action: policy_match.action,
+                            status: "failed".to_string(),
+                            detail: format!(
+                                "Policy-authorized preflight termination failed: {error}"
+                            ),
+                        });
+                    }
                 }
             }
         }
         wait_before_rescan();
-        remaining_processes =
-            collect_policy_prohibited_processes(&scan_processes(), policy);
+        remaining_processes = collect_policy_processes(&scan_processes(), policy);
+        termination_targets = collect_termination_targets(&remaining_processes, policy);
     }
 
-    let remaining_pids = remaining_processes
+    let remaining_termination_pids = termination_targets
         .iter()
         .map(|process| process.pid)
         .collect::<BTreeSet<_>>();
-    failures.retain(|pid, _| remaining_pids.contains(pid));
-    for process in &remaining_processes {
+    failures.retain(|pid, _| remaining_termination_pids.contains(pid));
+    for process in &termination_targets {
         failures.entry(process.pid).or_insert_with(|| {
             format!(
                 "{} (pid {}) remained active after the termination request.",
@@ -268,18 +341,101 @@ where
         });
     }
 
+    build_preflight_report(
+        policy,
+        remaining_processes,
+        killed_processes,
+        failures,
+        actions,
+        attempt_count,
+    )
+}
+
+fn collect_termination_targets(
+    processes: &[ProcessInfo],
+    policy: &ExamPolicy,
+) -> Vec<ProcessInfo> {
+    processes
+        .iter()
+        .filter(|process| {
+            resolve_process_policy(process, policy)
+                .map(|decision| decision.attempt_terminate)
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect()
+}
+
+fn build_preflight_report(
+    policy: &ExamPolicy,
+    remaining_processes: Vec<ProcessInfo>,
+    killed_processes: BTreeMap<u32, String>,
+    failures: BTreeMap<u32, String>,
+    actions: Vec<ProcessRemediationAction>,
+    attempt_count: usize,
+) -> PreflightKillReport {
+    let decisions = evaluate_process_policy(&remaining_processes, policy);
+    let hard_blocked_processes = decisions
+        .iter()
+        .filter(|process| process.action == "hardBlock")
+        .cloned()
+        .collect::<Vec<_>>();
+    let terminate_required_processes = decisions
+        .iter()
+        .filter(|process| process.action == "attemptTerminateThenBlock")
+        .cloned()
+        .collect::<Vec<_>>();
+    let continue_with_audit_processes = decisions
+        .iter()
+        .filter(|process| {
+            process.action == "continueAndAudit"
+                || process.action == "attemptTerminateThenContinue"
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let isolate_and_protect_processes = decisions
+        .iter()
+        .filter(|process| process.action == "isolateAndProtect")
+        .cloned()
+        .collect::<Vec<_>>();
+    let warnings = decisions
+        .iter()
+        .filter(|process| process.action == "warnOnly")
+        .cloned()
+        .collect::<Vec<_>>();
+    let blocking = hard_blocked_processes
+        .iter()
+        .chain(terminate_required_processes.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    let runtime_risk_level = if isolate_and_protect_processes.is_empty()
+        && continue_with_audit_processes.is_empty()
+        && warnings.is_empty()
+    {
+        "normal"
+    } else {
+        "elevated"
+    };
+
     PreflightKillReport {
-        all_clear: remaining_processes.is_empty(),
+        all_clear: blocking.is_empty(),
         killed_count: killed_processes.len(),
-        remaining_count: remaining_processes.len(),
+        remaining_count: blocking.len(),
         killed_names: killed_processes.into_values().collect(),
-        remaining_names: remaining_processes
+        remaining_names: blocking
             .iter()
             .map(|process| process.name.clone())
             .collect(),
         retry_count: attempt_count.saturating_sub(1),
         attempt_count,
         failures: failures.into_values().collect(),
+        actions,
+        hard_blocked_processes,
+        terminate_required_processes,
+        continue_with_audit_processes,
+        isolate_and_protect_processes,
+        warnings,
+        runtime_risk_level: runtime_risk_level.to_string(),
     }
 }
 
@@ -393,6 +549,17 @@ where
         retry_count: attempt_count.saturating_sub(1),
         attempt_count,
         failures: failures.into_values().collect(),
+        actions: Vec::new(),
+        hard_blocked_processes: Vec::new(),
+        terminate_required_processes: Vec::new(),
+        continue_with_audit_processes: Vec::new(),
+        isolate_and_protect_processes: Vec::new(),
+        warnings: Vec::new(),
+        runtime_risk_level: if remaining_processes.is_empty() {
+            "normal".to_string()
+        } else {
+            "elevated".to_string()
+        },
     }
 }
 
@@ -583,7 +750,16 @@ mod tests {
         policy.screen_capture_processes.clear();
         policy.debug_processes.clear();
         policy.virtual_machine_processes.clear();
-        policy.blocked_processes = vec!["custom.exe".to_string()];
+        policy.blocked_processes.clear();
+        policy.process_rules = vec![crate::policy_model::ProcessRule {
+            name: "custom.exe".to_string(),
+            category: "debug-tools".to_string(),
+            action: crate::policy_model::ProcessPolicyAction::AttemptTerminateThenBlock,
+            severity: "critical".to_string(),
+            allow_exam_start: false,
+            attempt_terminate: true,
+            audit_required: true,
+        }];
         let process_running = Cell::new(true);
         let mut scan = || {
             if process_running.get() {
@@ -607,5 +783,115 @@ mod tests {
 
         assert!(report.all_clear);
         assert_eq!(report.killed_names, vec!["custom.exe"]);
+    }
+
+    #[test]
+    fn isolate_and_continue_rules_do_not_terminate_or_block_start() {
+        let policy = crate::policy_model::ExamPolicy::strict_builtin();
+        let mut scan = || {
+            vec![
+                process(77, "AnyDesk.exe"),
+                process(78, "remoting_host.exe"),
+                process(79, "parsecd.exe"),
+            ]
+        };
+
+        let report = preflight_remediate_policy_processes_with(
+            &policy,
+            3,
+            &mut scan,
+            |_pid| panic!("allowed-under-isolation process must not be terminated"),
+            || panic!("no termination means no retry wait"),
+        );
+
+        assert!(report.all_clear);
+        assert_eq!(report.attempt_count, 0);
+        assert_eq!(report.isolate_and_protect_processes.len(), 2);
+        assert_eq!(report.continue_with_audit_processes.len(), 1);
+        assert_eq!(report.runtime_risk_level, "elevated");
+    }
+
+    #[test]
+    fn hard_block_process_blocks_without_arbitrary_termination() {
+        let policy = crate::policy_model::ExamPolicy::strict_builtin();
+        let mut scan = || vec![process(81, "windbg.exe")];
+
+        let report = preflight_remediate_policy_processes_with(
+            &policy,
+            3,
+            &mut scan,
+            |_pid| panic!("hardBlock without attemptTerminate must not kill"),
+            || panic!("no termination means no retry wait"),
+        );
+
+        assert!(!report.all_clear);
+        assert_eq!(report.hard_blocked_processes.len(), 1);
+        assert_eq!(report.remaining_names, vec!["windbg.exe"]);
+    }
+
+    #[test]
+    fn required_termination_failure_still_blocks_exam() {
+        let mut policy = crate::policy_model::ExamPolicy::strict_builtin();
+        policy.process_rules.push(crate::policy_model::ProcessRule {
+            name: "required-tool.exe".to_string(),
+            category: "cheat-tool".to_string(),
+            action: crate::policy_model::ProcessPolicyAction::AttemptTerminateThenBlock,
+            severity: "critical".to_string(),
+            allow_exam_start: false,
+            attempt_terminate: true,
+            audit_required: true,
+        });
+        let terminate_count = Cell::new(0);
+        let mut scan = || vec![process(82, "required-tool.exe")];
+
+        let report = preflight_remediate_policy_processes_with(
+            &policy,
+            2,
+            &mut scan,
+            |_pid| {
+                terminate_count.set(terminate_count.get() + 1);
+                Err("access denied".to_string())
+            },
+            || {},
+        );
+
+        assert!(!report.all_clear);
+        assert_eq!(report.terminate_required_processes.len(), 1);
+        assert_eq!(terminate_count.get(), 2);
+        assert_eq!(report.actions.len(), 2);
+    }
+
+    #[test]
+    fn runtime_only_terminates_processes_with_explicit_terminate_action() {
+        let mut policy = crate::policy_model::ExamPolicy::strict_builtin();
+        policy.process_rules.push(crate::policy_model::ProcessRule {
+            name: "terminate-me.exe".to_string(),
+            category: "cheat-tool".to_string(),
+            action: crate::policy_model::ProcessPolicyAction::AttemptTerminateThenBlock,
+            severity: "critical".to_string(),
+            allow_exam_start: false,
+            attempt_terminate: true,
+            audit_required: true,
+        });
+        let terminated = RefCell::new(Vec::new());
+        let mut remediator = RuntimeProcessRemediator::new();
+
+        let report = remediator.observe_policy_and_remediate_using(
+            1_000,
+            &[process(90, "AnyDesk.exe"), process(91, "terminate-me.exe")],
+            &policy,
+            |pid| {
+                terminated.borrow_mut().push(pid);
+                Ok(())
+            },
+        );
+
+        assert_eq!(*terminated.borrow(), vec![91]);
+        assert!(report.actions.iter().any(|action| {
+            action.name == "AnyDesk.exe" && action.status == "allowed-under-isolation"
+        }));
+        assert!(report.actions.iter().any(|action| {
+            action.name == "terminate-me.exe" && action.status == "terminated"
+        }));
     }
 }

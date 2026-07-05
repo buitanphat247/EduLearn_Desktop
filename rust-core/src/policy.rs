@@ -34,9 +34,8 @@ impl Default for PrecheckPolicy {
 impl PrecheckPolicy {
     #[cfg(test)]
     pub fn for_snapshot(_snapshot: &PrecheckSnapshot) -> Self {
-        // The local policy is intentionally strict for protected exam sessions.
-        // It never kills third-party processes; it blocks the exam gate and asks
-        // the user to close remote/capture/debug tools before trying again.
+        // Detection remains strict. The signed process action model decides
+        // whether a finding blocks, terminates, audits, or runs under isolation.
         Self::default()
     }
 

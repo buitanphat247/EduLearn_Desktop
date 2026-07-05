@@ -22,15 +22,15 @@ impl PrecheckRule for RemoteSessionRule {
 fn build_remote_finding(process: &ProcessInfo) -> EvaluationFinding {
     EvaluationFinding {
         rule_id: format!("process.remote.{}", process.pid),
-        severity: "block".to_string(),
+        severity: "warn".to_string(),
         confidence: 0.98,
-        risk_points: 85,
+        risk_points: 45,
         summary: format!("Remote access process detected: {}", process.name),
         detail: format!(
-            "{} is running with pid {}. Remote control software should be closed before the exam starts.",
+            "{} is running with pid {}. The signed process action decides whether to block, terminate, or continue under isolation.",
             process.name, process.pid
         ),
-        recommendation: "Close remote desktop and remote control software, then run the system check again."
+        recommendation: "Close remote-control software when possible; otherwise the signed policy may continue with monitoring and isolation."
             .to_string(),
         metadata: RuleMetadata {
             rule_id: "process.remote".to_string(),

@@ -148,6 +148,7 @@
     "service-validation-report",
     "etw-producer-validation-report",
     "desktop-validation-report",
+    "emergency-restore-validation-report",
     "performance-report",
     "benchmark-report",
     "release-bundle-summary"

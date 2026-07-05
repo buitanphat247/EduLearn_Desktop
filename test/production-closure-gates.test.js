@@ -78,18 +78,34 @@ test("audit sync bundle requires an intact hash chain and sync identity", () => 
     sessionId: "session-1",
     policyVersion: 1,
     generatedAt: "2026-06-30T00:00:00.000Z",
+    uploadEndpoint: "/exam-security/audit/upload",
+    ackCommand: "ack_audit_upload_batch",
   });
   assert.equal(bundle.ready, true);
+  assert.equal(bundle.schemaVersion, 2);
   assert.equal(bundle.recordCount, 2);
   assert.equal(bundle.headHash, "b".repeat(64));
+  assert.equal(bundle.localRetention, "retain-until-ack");
 
   const broken = buildAuditSyncBundle({
     records: [{ event: "SECOND", previousHash: "wrong", currentHash: "b".repeat(64) }],
     deviceIdHash: "device-hash",
     sessionId: "session-1",
     generatedAt: "2026-06-30T00:00:00.000Z",
+    uploadEndpoint: "/exam-security/audit/upload",
+    ackCommand: "ack_audit_upload_batch",
   });
   assert.equal(broken.ready, false);
+
+  const missingAck = buildAuditSyncBundle({
+    records,
+    deviceIdHash: "device-hash",
+    sessionId: "session-1",
+    generatedAt: "2026-06-30T00:00:00.000Z",
+    uploadEndpoint: "/exam-security/audit/upload",
+  });
+  assert.equal(missingAck.ready, false);
+  assert.equal(missingAck.reason, "missing-local-ack-command");
 });
 
 test("capture evidence checklist covers required tools, modes and limitations", () => {

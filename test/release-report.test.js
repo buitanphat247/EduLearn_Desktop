@@ -17,6 +17,7 @@ function completeProductionGates(overrides = {}) {
     performanceSoakPassed: true,
     benchmarkEvidencePassed: true,
     nativeEtwEvidencePassed: true,
+    emergencyRestoreEvidencePassed: true,
     auditSyncReady: true,
     lintPassed: true,
     installerSigned: true,
@@ -38,6 +39,10 @@ test("release verdict follows fail-closed production readiness gates", () => {
   );
   assert.equal(
     productionVerdict(completeProductionGates({ nativeEtwEvidencePassed: false })),
+    "BETA_LAB_READY_ONLY",
+  );
+  assert.equal(
+    productionVerdict(completeProductionGates({ emergencyRestoreEvidencePassed: false })),
     "BETA_LAB_READY_ONLY",
   );
   assert.equal(
@@ -73,6 +78,7 @@ test("release gate status maps evidence bundles to explicit booleans", () => {
       performance: { soakPassed: true },
       benchmark: { evidencePassed: true },
       processProducer: { nativeEtwEvidencePassed: true },
+      emergencyRestore: { evidencePassed: true },
       audit: { syncReady: true },
       lint: { passed: true },
       installer: { signed: true },
@@ -99,7 +105,9 @@ test("release report includes evidence status and limitations", () => {
   assert.equal(report.testsPassed, true);
   assert.equal(report.gates.receiverCaptureEvidencePassed, false);
   assert.equal(report.gates.nativeEtwEvidencePassed, false);
+  assert.equal(report.gates.emergencyRestoreEvidencePassed, false);
   assert.match(report.markdown, /Capture protection is best-effort/);
   assert.match(report.markdown, /receiverCaptureEvidencePassed: false/);
   assert.match(report.markdown, /nativeEtwEvidencePassed: false/);
+  assert.match(report.markdown, /emergencyRestoreEvidencePassed: false/);
 });

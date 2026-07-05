@@ -22,15 +22,15 @@ impl PrecheckRule for ScreenCaptureRule {
 fn build_capture_finding(process: &ProcessInfo) -> EvaluationFinding {
     EvaluationFinding {
         rule_id: format!("process.capture.{}", process.pid),
-        severity: "block".to_string(),
+        severity: "warn".to_string(),
         confidence: 0.95,
-        risk_points: 75,
+        risk_points: 40,
         summary: format!("Screen capture process detected: {}", process.name),
         detail: format!(
-            "{} is active with pid {}. Recording software should be closed before the exam session.",
+            "{} is active with pid {}. The signed process action decides whether to block, terminate, or continue with best-effort capture protection.",
             process.name, process.pid
         ),
-        recommendation: "Close screen capture or recording tools before entering the exam room."
+        recommendation: "Close capture tools when possible; otherwise the signed policy may continue with monitoring and best-effort capture protection."
             .to_string(),
         metadata: RuleMetadata {
             rule_id: "process.capture".to_string(),

@@ -26,6 +26,14 @@ function createMainWindow() {
     },
   });
 
+  // Remove the native menu completely so pressing Alt cannot surface the
+  // Windows menu bar during the exam desktop flow.
+  if (typeof win.removeMenu === "function") {
+    win.removeMenu();
+  } else {
+    win.setMenuBarVisibility(false);
+  }
+
   const startUrl = resolveStartUrl();
   let hasShownWindow = false;
 

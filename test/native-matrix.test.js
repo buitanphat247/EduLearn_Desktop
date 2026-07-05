@@ -244,6 +244,7 @@ test("native evidence schema v2 requires capture, runtime, performance and resto
   assert.equal(evidenceSchema.requiredReports.includes("performance-report"), true);
   assert.equal(evidenceSchema.requiredReports.includes("service-validation-report"), true);
   assert.equal(evidenceSchema.requiredReports.includes("etw-producer-validation-report"), true);
+  assert.equal(evidenceSchema.requiredReports.includes("emergency-restore-validation-report"), true);
   assert.equal(evidenceSchema.requiredReports.includes("benchmark-report"), true);
   for (const field of [
     "etwCallbackP95Micros",
@@ -272,6 +273,7 @@ test("acceptance matrix keeps missing native evidence explicit", () => {
     "soak-test",
     "stress-test",
     "desktop-validation",
+    "emergency-restore-validation",
     "service-validation",
     "benchmark-validation",
   ]) {
@@ -304,6 +306,11 @@ test("desktop isolation checklist covers lifecycle, crash recovery and Windows e
     "switch-desktop-failure-terminates-child",
     "electron-crash-restores-default-desktop",
     "watchdog-timeout-restores-default-desktop",
+    "emergency-restore-widget-has-trusted-restore-path",
+    "native-emergency-restore-widget-is-bootstrapper-owned",
+    "bootstrapper-fallback-restores-default-desktop-after-rust-crash",
+    "bootstrapper-fallback-restores-default-desktop-after-renderer-crash",
+    "hold-to-restore-uses-real-native-input",
   ]) {
     assert.equal(
       desktopIsolationChecklist.desktopLifecycleScenarios.includes(scenario),
@@ -313,6 +320,14 @@ test("desktop isolation checklist covers lifecycle, crash recovery and Windows e
   }
   for (const edge of ["sleep-resume", "rdp-attach", "uac-secure-desktop", "dwm-restart"]) {
     assert.equal(desktopIsolationChecklist.systemEdgeScenarios.includes(edge), true, edge);
+  }
+  for (const evidence of [
+    "desktop-telemetry-jsonl",
+    "emergency-restore-log",
+    "emergency-restore-widget-screenshot",
+    "bootstrapper-recovery-log",
+  ]) {
+    assert.equal(desktopIsolationChecklist.requiredEvidence.includes(evidence), true, evidence);
   }
 });
 

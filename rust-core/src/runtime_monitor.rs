@@ -2,8 +2,9 @@ use crate::clipboard_guard::ClipboardGuardMutationResult;
 use crate::capture_guard::CaptureGuardMutationResult;
 use crate::display_guard::OverlayMutationResult;
 use crate::models::{
-    DetectionSignal, DisplayInfo, ProcessCategories, ProcessRemediationReport, ProtectionLogLine,
-    ProtectionStatus, RuntimeMonitorSummary, RuntimeMonitorTickResult,
+    DetectionSignal, DisplayInfo, ProcessCategories, ProcessPolicyMatch,
+    ProcessRemediationReport, ProtectionLogLine, ProtectionStatus, RuntimeMonitorSummary,
+    RuntimeMonitorTickResult,
 };
 use crate::policy_model::{ExamPolicy, REMEDIATION_FAILURE_CONTINUE_AND_AUDIT};
 use crate::process_watcher::{ProcessWatcherBatchReport, ProcessWatcherProducerStatus};
@@ -232,8 +233,8 @@ pub fn build_runtime_monitor_tick_result(
             &mut log_lines,
             &mut timestamp,
             "warn",
-            "POLICY_ENFORCEMENT_REMEDIATION",
-            "The exam remains active while prohibited remote-control or capture processes are terminated immediately.",
+            "POLICY_ENFORCEMENT_ISOLATION",
+            "The exam remains active under monitored isolation and best-effort capture protection for policy-allowed remote-control or capture processes.",
         );
     } else {
         push_log_line(
@@ -295,6 +296,18 @@ pub fn build_runtime_monitor_tick_result(
         last_runtime_event_at: Some(collected_at),
     };
 
+    let process_policy = process_policy_from_remediation(&process_remediation);
+    let runtime_risk_level = if process_policy.iter().any(|process| {
+        process.action == "continueAndAudit"
+            || process.action == "attemptTerminateThenContinue"
+            || process.action == "isolateAndProtect"
+            || process.action == "warnOnly"
+    }) {
+        "elevated"
+    } else {
+        "normal"
+    };
+
     RuntimeMonitorTickResult {
         collected_at,
         session_state: next_session_state.to_string(),
@@ -315,9 +328,40 @@ pub fn build_runtime_monitor_tick_result(
         screen_capture_signals: screen_capture_signals.to_vec(),
         vm_signals: vm_signals.to_vec(),
         process_remediation,
+        runtime_risk_level: runtime_risk_level.to_string(),
+        process_policy,
         protection_status,
         log_lines,
     }
+}
+
+fn process_policy_from_remediation(
+    report: &ProcessRemediationReport,
+) -> Vec<ProcessPolicyMatch> {
+    report
+        .actions
+        .iter()
+        .map(|action| ProcessPolicyMatch {
+            pid: action.pid,
+            name: action.name.clone(),
+            executable_path: None,
+            creation_time_ms: None,
+            category: action.category.clone(),
+            action: action.action.clone(),
+            severity: if action.action == "hardBlock"
+                || action.action == "attemptTerminateThenBlock"
+            {
+                "critical".to_string()
+            } else {
+                "high".to_string()
+            },
+            allow_exam_start: action.action != "hardBlock"
+                && action.action != "attemptTerminateThenBlock",
+            attempt_terminate: action.action == "attemptTerminateThenBlock"
+                || action.action == "attemptTerminateThenContinue",
+            audit_required: action.action != "ignore",
+        })
+        .collect()
 }
 
 fn push_log_line(
@@ -498,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_monitor_keeps_exam_running_while_remote_process_is_remediated() {
+    fn runtime_monitor_keeps_exam_running_while_remote_process_is_isolated() {
         let remote_signals = vec![signal("remote-process-42")];
         let result = build_runtime_monitor_tick_result(
             1_782_600_500_000,
@@ -532,7 +576,7 @@ mod tests {
         assert!(result
             .log_lines
             .iter()
-            .any(|line| line.code == "POLICY_ENFORCEMENT_REMEDIATION"));
+            .any(|line| line.code == "POLICY_ENFORCEMENT_ISOLATION"));
     }
 
     #[test]

@@ -9,6 +9,7 @@ node_modules/
 
 # Logs and caches
 *.log
+logs/
 .DS_Store
 Thumbs.db
 

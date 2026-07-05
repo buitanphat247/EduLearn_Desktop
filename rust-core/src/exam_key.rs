@@ -5,6 +5,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use crate::policy_signature::TrustedPolicyKeys;
 use crate::policy_signature::SignedExamPolicy;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -41,6 +42,29 @@ pub struct SignedExamChallenge {
     pub public_key: String,
     pub payload: ExamChallengePayload,
     pub signature: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AuditUploadSigningPayload {
+    pub session_token: String,
+    pub session_expires_at_ms: u64,
+    pub device_id: String,
+    pub policy_version: String,
+    pub runtime_version: String,
+    pub schema_version: u16,
+    pub records: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignedAuditUpload {
+    pub algorithm: String,
+    pub device_id: String,
+    pub public_key: String,
+    pub payload: AuditUploadSigningPayload,
+    pub device_signature: String,
+    pub runtime_signature: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -239,6 +263,14 @@ pub fn sign_exam_challenge(
     sign_exam_challenge_with(&key, payload, now_ms)
 }
 
+pub fn sign_audit_upload(
+    payload: AuditUploadSigningPayload,
+    now_ms: u64,
+) -> Result<SignedAuditUpload, String> {
+    let key = load_or_create_signing_key()?;
+    sign_audit_upload_with(&key, payload, now_ms)
+}
+
 fn sign_exam_challenge_with(
     key: &SigningKey,
     payload: ExamChallengePayload,
@@ -261,6 +293,29 @@ fn sign_exam_challenge_with(
     })
 }
 
+fn sign_audit_upload_with(
+    key: &SigningKey,
+    payload: AuditUploadSigningPayload,
+    now_ms: u64,
+) -> Result<SignedAuditUpload, String> {
+    validate_audit_upload(&payload, now_ms)?;
+    let identity = identity_for(key)?;
+    if payload.device_id != identity.device_id {
+        return Err("Audit upload deviceId does not match this installation.".to_string());
+    }
+    let canonical = serde_jcs::to_vec(&payload)
+        .map_err(|error| format!("Audit upload canonicalization failed: {error}"))?;
+    let signature = STANDARD.encode(key.sign(&canonical).to_bytes());
+    Ok(SignedAuditUpload {
+        algorithm: "Ed25519".to_string(),
+        device_id: identity.device_id,
+        public_key: identity.public_key,
+        payload,
+        device_signature: signature.clone(),
+        runtime_signature: signature,
+    })
+}
+
 fn identity_for(key: &SigningKey) -> Result<ExamDeviceIdentity, String> {
     let public_key = key.verifying_key().to_bytes();
     let digest = Sha256::digest(public_key);
@@ -273,6 +328,31 @@ fn identity_for(key: &SigningKey) -> Result<ExamDeviceIdentity, String> {
         device_id,
         public_key: STANDARD.encode(public_key),
     })
+}
+
+fn validate_audit_upload(payload: &AuditUploadSigningPayload, now_ms: u64) -> Result<(), String> {
+    for (field, value) in [
+        ("sessionToken", payload.session_token.as_str()),
+        ("deviceId", payload.device_id.as_str()),
+        ("policyVersion", payload.policy_version.as_str()),
+        ("runtimeVersion", payload.runtime_version.as_str()),
+    ] {
+        if value.is_empty() || value.len() > 256 {
+            return Err(format!("{field} must contain between 1 and 256 characters."));
+        }
+    }
+    if payload.session_token.len() < 16 {
+        return Err("Audit session token is too short.".to_string());
+    }
+    if payload.session_expires_at_ms <= now_ms
+        || payload.session_expires_at_ms.saturating_sub(now_ms) > 8 * 60 * 60 * 1_000
+    {
+        return Err("Audit session token is expired or has an invalid lifetime.".to_string());
+    }
+    if payload.records.is_empty() || payload.records.len() > 500 {
+        return Err("Audit upload must contain between 1 and 500 records.".to_string());
+    }
+    Ok(())
 }
 
 fn validate_challenge(payload: &ExamChallengePayload, now_ms: u64) -> Result<(), String> {
@@ -428,8 +508,9 @@ fn unprotect_seed(_protected: &[u8]) -> Result<[u8; 32], String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        identity_for, sign_exam_challenge_with, verify_exam_receipt_for_device,
-        ExamChallengePayload, ExamReceipt, SignedExamReceipt,
+        identity_for, sign_audit_upload_with, sign_exam_challenge_with,
+        verify_exam_receipt_for_device, AuditUploadSigningPayload, ExamChallengePayload,
+        ExamReceipt, SignedExamReceipt,
     };
     use crate::policy_signature::TrustedPolicyKeys;
     use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
@@ -480,6 +561,42 @@ mod tests {
         assert!(
             sign_exam_challenge_with(&key, payload(identity.device_id), 10_000).is_err()
         );
+    }
+
+    #[test]
+    fn signs_a_canonical_audit_upload_payload() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[6_u8; 32]);
+        let identity = identity_for(&key).unwrap();
+        let payload = AuditUploadSigningPayload {
+            session_token: "audit-session-token".to_string(),
+            session_expires_at_ms: 10_000,
+            device_id: identity.device_id.clone(),
+            policy_version: "exam-1-v1".to_string(),
+            runtime_version: "10.9A".to_string(),
+            schema_version: 2,
+            records: vec![serde_json::json!({
+                "auditId": "audit-1",
+                "currentHash": "a".repeat(64),
+            })],
+        };
+
+        let signed = sign_audit_upload_with(&key, payload, 2_000).unwrap();
+        let public_bytes: [u8; 32] = base64::engine::general_purpose::STANDARD
+            .decode(&signed.public_key)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let signature = Signature::from_slice(
+            &base64::engine::general_purpose::STANDARD
+                .decode(&signed.device_signature)
+                .unwrap(),
+        )
+        .unwrap();
+        VerifyingKey::from_bytes(&public_bytes)
+            .unwrap()
+            .verify(&serde_jcs::to_vec(&signed.payload).unwrap(), &signature)
+            .unwrap();
+        assert_eq!(signed.device_signature, signed.runtime_signature);
     }
 
     #[test]

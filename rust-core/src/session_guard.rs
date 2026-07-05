@@ -9,6 +9,7 @@ pub const SESSION_STATE_PREFLIGHT_READY: &str = "PREFLIGHT_READY";
 pub const SESSION_STATE_STARTING_EXAM_SESSION: &str = "STARTING_EXAM_SESSION";
 pub const SESSION_STATE_SAVING_DESKTOP_STATE: &str = "SAVING_DESKTOP_STATE";
 pub const SESSION_STATE_ENTERING_KIOSK: &str = "ENTERING_KIOSK";
+pub const SESSION_STATE_EXAM_RUNNING_CONFIRMED: &str = "EXAM_RUNNING_CONFIRMED";
 pub const SESSION_STATE_PROTECTION_ACTIVE: &str = "PROTECTION_ACTIVE";
 pub const SESSION_STATE_EXAM_RUNNING: &str = "EXAM_RUNNING";
 pub const SESSION_STATE_RECOVERY_REQUIRED: &str = "RECOVERY_REQUIRED";
@@ -41,6 +42,26 @@ pub fn is_valid_session_transition(from: &str, to: &str) -> bool {
             | (
                 SESSION_STATE_STARTING_EXAM_SESSION,
                 SESSION_STATE_EXAM_RUNNING
+            )
+            | (
+                SESSION_STATE_STARTING_EXAM_SESSION,
+                SESSION_STATE_ENTERING_KIOSK
+            )
+            | (
+                SESSION_STATE_ENTERING_KIOSK,
+                SESSION_STATE_EXAM_RUNNING_CONFIRMED
+            )
+            | (
+                SESSION_STATE_EXAM_RUNNING_CONFIRMED,
+                SESSION_STATE_EXAM_RUNNING
+            )
+            | (
+                SESSION_STATE_ENTERING_KIOSK,
+                SESSION_STATE_IDLE
+            )
+            | (
+                SESSION_STATE_EXAM_RUNNING_CONFIRMED,
+                SESSION_STATE_IDLE
             )
             | (SESSION_STATE_EXAM_RUNNING, SESSION_STATE_RECOVERY_REQUIRED)
             | (SESSION_STATE_STARTING_EXAM_SESSION, SESSION_STATE_IDLE)
@@ -197,6 +218,8 @@ pub fn build_start_exam_session_result(
         session_context,
         desktop_state,
         protection_status,
+        runtime_risk_level: "normal".to_string(),
+        process_policy: Vec::new(),
         log_lines,
     }
 }
@@ -251,9 +274,10 @@ pub fn build_exit_exam_session_result(
 mod tests {
     use super::{
         build_exit_exam_session_result, build_idle_protection_status, build_start_exam_session_result,
-        is_valid_session_transition, SESSION_STATE_EXAM_RUNNING, SESSION_STATE_IDLE,
+        is_valid_session_transition, SESSION_STATE_EXAM_RUNNING, SESSION_STATE_EXAM_RUNNING_CONFIRMED,
+        SESSION_STATE_IDLE,
         SESSION_STATE_INIT, SESSION_STATE_PREFLIGHT_READY,
-        SESSION_STATE_RECOVERY_REQUIRED,
+        SESSION_STATE_RECOVERY_REQUIRED, SESSION_STATE_ENTERING_KIOSK,
         SESSION_STATE_STARTING_EXAM_SESSION,
     };
     use crate::models::{DesktopStateSnapshot, StartExamSessionPayload};
@@ -330,6 +354,14 @@ mod tests {
         ));
         assert!(is_valid_session_transition(
             SESSION_STATE_STARTING_EXAM_SESSION,
+            SESSION_STATE_ENTERING_KIOSK,
+        ));
+        assert!(is_valid_session_transition(
+            SESSION_STATE_ENTERING_KIOSK,
+            SESSION_STATE_EXAM_RUNNING_CONFIRMED,
+        ));
+        assert!(is_valid_session_transition(
+            SESSION_STATE_EXAM_RUNNING_CONFIRMED,
             SESSION_STATE_EXAM_RUNNING,
         ));
         assert!(is_valid_session_transition(

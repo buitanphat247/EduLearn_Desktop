@@ -97,6 +97,12 @@
     "etw-buffer-loss",
     "named-pipe-accept-cancellation",
     "service-client-response-timeout",
+    "emergency-widget-visible-during-kiosk",
+    "emergency-widget-hidden-when-idle",
+    "emergency-widget-hold-cancel",
+    "emergency-widget-hold-restore",
+    "emergency-widget-destroyed-after-restore",
+    "emergency-widget-audit-events",
     "sleep-during-kiosk",
     "power-interruption-simulated"
   ],
@@ -199,7 +205,12 @@
     "does-not-move-existing-electron-window-between-desktops",
     "restores-original-input-desktop-after-normal-exit",
     "restores-original-input-desktop-after-crash",
-    "desktop-isolation-remains-explicit-opt-in"
+    "desktop-isolation-remains-explicit-opt-in",
+    "emergency-restore-widget-has-trusted-restore-path",
+    "native-emergency-restore-widget-is-bootstrapper-owned",
+    "bootstrapper-fallback-restores-default-desktop-after-rust-crash",
+    "bootstrapper-fallback-restores-default-desktop-after-renderer-crash",
+    "hold-to-restore-uses-real-native-input"
   ],
   "protectionClassifications": [
     "Blocked",

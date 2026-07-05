@@ -75,6 +75,21 @@ pub struct ProcessInfo {
     pub categories: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessPolicyMatch {
+    pub pid: u32,
+    pub name: String,
+    pub executable_path: Option<String>,
+    pub creation_time_ms: Option<u64>,
+    pub category: String,
+    pub action: String,
+    pub severity: String,
+    pub allow_exam_start: bool,
+    pub attempt_terminate: bool,
+    pub audit_required: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessCategories {
@@ -131,6 +146,12 @@ pub struct PreflightDecision {
     pub reason_codes: Vec<String>,
     pub policy_version: String,
     pub recommendations: Vec<String>,
+    pub hard_blocked_processes: Vec<ProcessPolicyMatch>,
+    pub terminate_required_processes: Vec<ProcessPolicyMatch>,
+    pub continue_with_audit_processes: Vec<ProcessPolicyMatch>,
+    pub isolate_and_protect_processes: Vec<ProcessPolicyMatch>,
+    pub warnings: Vec<ProcessPolicyMatch>,
+    pub runtime_risk_level: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -286,6 +307,12 @@ pub struct ExitExamSessionPayload {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct NotifyVisualKioskReadyPayload {
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EnterKioskPayload {
     pub session_id: Option<String>,
     pub window_handle_hex: Option<String>,
@@ -328,6 +355,8 @@ pub struct StartExamSessionResult {
     pub session_context: ExamSessionContext,
     pub desktop_state: DesktopStateSnapshot,
     pub protection_status: ProtectionStatus,
+    pub runtime_risk_level: String,
+    pub process_policy: Vec<ProcessPolicyMatch>,
     pub log_lines: Vec<ProtectionLogLine>,
 }
 
@@ -367,6 +396,8 @@ pub struct RuntimeMonitorTickResult {
     pub screen_capture_signals: Vec<DetectionSignal>,
     pub vm_signals: Vec<DetectionSignal>,
     pub process_remediation: ProcessRemediationReport,
+    pub runtime_risk_level: String,
+    pub process_policy: Vec<ProcessPolicyMatch>,
     pub protection_status: ProtectionStatus,
     pub log_lines: Vec<ProtectionLogLine>,
 }

@@ -1,10 +1,12 @@
 mod accessibility_guard;
 mod audit_log;
+mod bootstrapper_control;
 mod collectors;
 mod capture_guard;
 mod clipboard_guard;
 mod desktop_state;
 mod desktop_isolation;
+mod emergency_widget;
 mod evaluation;
 mod etw_producer;
 mod exam_key;
@@ -40,7 +42,14 @@ use accessibility_guard::{
     activate_accessibility_guard, deactivate_accessibility_guard,
     restore_accessibility_after_unclean_shutdown,
 };
-use audit_log::append_audit_event;
+use audit_log::{
+    ack_audit_upload_batch, append_audit_event, audit_status, drain_audit_upload_batch,
+    record_audit_upload_failure, verify_audit_chain,
+};
+use bootstrapper_control::{
+    sync_widget_state as sync_bootstrapper_widget_state, take_widget_interaction,
+    write_restore_request as write_bootstrapper_restore_request,
+};
 use collectors::{
     collect_display_info, collect_precheck_snapshot_with_policy,
     collect_process_categories_from_processes, collect_remote_signals,
@@ -55,13 +64,21 @@ use clipboard_guard::{
 };
 use desktop_state::capture_desktop_state;
 use desktop_isolation::restore_default_input_desktop;
+use emergency_widget::{
+    audit_payload as emergency_audit_payload, EmergencyRestoreRequestPayload,
+    EmergencyRestoreValidationContext, EmergencyRestoreWidgetController, EVENT_RESTORE_ACCEPTED,
+    EVENT_RESTORE_BOOTSTRAPPER_FALLBACK, EVENT_RESTORE_COMPLETED,
+    EVENT_RESTORE_DESKTOP_DESTROYED, EVENT_RESTORE_DESKTOP_SWITCH, EVENT_RESTORE_FAILED,
+    EVENT_RESTORE_REJECTED, EVENT_RESTORE_REQUESTED,
+    EVENT_RESTORE_STARTED, EVENT_RESTORE_TIMEOUT, EVENT_WIDGET_DESTROYED,
+};
 use display_guard::{activate_native_overlays, deactivate_native_overlays, sync_native_overlays};
 use dpi_awareness::activate_per_monitor_v2_awareness;
 use evaluation::{build_precheck_report_with_policy, build_preflight_result_with_policy};
 use exam_key::{
-    build_elevated_termination_request, get_exam_device_identity, sign_exam_challenge,
-    verify_exam_receipt, verify_service_authorization, ExamChallengePayload,
-    SignedExamReceipt,
+    build_elevated_termination_request, get_exam_device_identity, sign_audit_upload,
+    sign_exam_challenge, verify_exam_receipt, verify_service_authorization,
+    AuditUploadSigningPayload, ExamChallengePayload, SignedExamReceipt,
 };
 use focus_guard::{activate_focus_guard, deactivate_focus_guard};
 use input_guard::{activate_input_guard, deactivate_input_guard};
@@ -69,8 +86,8 @@ use ipc_auth::{AuthenticatedFrame, IpcAuthenticator};
 use kiosk_guard::{build_enter_kiosk_result, build_exit_kiosk_result};
 use models::{
     DesktopStateSnapshot, DetectionSignal, EnterKioskPayload, ExitExamSessionPayload,
-    LoadExamPolicyPayload, PrecheckReport, PreflightKillPayload, PreflightResult,
-    ProtectionStatus, RuntimeMonitorTickPayload, StartExamSessionPayload,
+    LoadExamPolicyPayload, NotifyVisualKioskReadyPayload, PrecheckReport, PreflightKillPayload,
+    PreflightResult, ProtectionStatus, RuntimeMonitorTickPayload, StartExamSessionPayload,
 };
 use mouse_guard::{activate_mouse_guard, deactivate_mouse_guard};
 use process_remediation::{
@@ -106,6 +123,7 @@ use session_guard::{
     SESSION_STATE_STARTING_EXAM_SESSION,
 };
 use taskbar_guard::{hide_taskbar, show_taskbar};
+use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -114,6 +132,7 @@ const SESSION_STATE_CORE_READY: &str = "CORE_READY";
 
 #[derive(Debug)]
 struct CoreRuntimeState {
+    runtime_id: String,
     precheck_report: Option<PrecheckReport>,
     preflight_result: Option<PreflightResult>,
     session_state: String,
@@ -127,6 +146,9 @@ struct CoreRuntimeState {
     runtime_event_bus: RuntimeEventBus,
     runtime_state_engine: RuntimeStateEngine,
     runtime_telemetry: RuntimeTelemetry,
+    runtime_risk_level: String,
+    audited_process_policy: BTreeMap<String, String>,
+    emergency_widget: EmergencyRestoreWidgetController,
     runtime_scheduler: RuntimeMonitorScheduler,
     cached_vm_signals: Vec<DetectionSignal>,
     process_collector: ProcessCollector,
@@ -159,6 +181,30 @@ struct CoreRequest {
     payload: Value,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuditBatchPayload {
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuditAckPayload {
+    audit_ids: Vec<String>,
+    #[serde(default)]
+    uploaded_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuditFailurePayload {
+    audit_ids: Vec<String>,
+    reason: String,
+    #[serde(default)]
+    failed_at_ms: Option<u64>,
+}
+
 #[derive(Debug, Serialize)]
 struct CoreError {
     code: &'static str,
@@ -189,6 +235,13 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
+}
+
+fn core_runtime_id() -> String {
+    std::env::var("EDULEARN_EXAM_RUNTIME_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "rust-core-runtime".to_string())
 }
 
 fn write_json_line<T: Serialize>(value: &T) -> io::Result<()> {
@@ -247,6 +300,7 @@ fn build_status_snapshot(state: &CoreRuntimeState) -> Value {
         "safeExamMode": safe_exam_mode,
         "nativeCoreConnected": true,
         "coreVersion": CORE_VERSION,
+        "runtimeId": state.runtime_id,
         "sessionState": state.session_state,
         "lastCoreHeartbeat": now_ms(),
         "precheckCollectedAt": latest_report.map(|report| report.collected_at),
@@ -262,6 +316,7 @@ fn build_status_snapshot(state: &CoreRuntimeState) -> Value {
             .preflight_result
             .as_ref()
             .map(|result| result.decision.primary_reason_code.clone()),
+        "runtimeRiskLevel": state.runtime_risk_level,
         "examProtectionActive": state.protection_status.exam_protection_active,
         "protectionDryRun": state.protection_status.protection_dry_run,
         "kioskActive": state.protection_status.kiosk_active,
@@ -284,6 +339,8 @@ fn build_status_snapshot(state: &CoreRuntimeState) -> Value {
         "runtimeStateEngine": state.runtime_state_engine.snapshot(),
         "runtimeTelemetry": state.runtime_telemetry.last_snapshot(),
         "runtimeEvents": state.runtime_event_bus.recent_events(25),
+        "audit": audit_status().ok(),
+        "emergencyRestore": state.emergency_widget.snapshot(),
     })
 }
 
@@ -309,6 +366,7 @@ fn is_audited_command(cmd: &str) -> bool {
             | "exit_exam_session"
             | "exit_kiosk"
             | "force_restore_desktop"
+            | "request_emergency_restore"
             | "sync_display_topology"
             | "run_runtime_monitor_tick"
             | "shutdown"
@@ -378,6 +436,209 @@ fn run_preflight_process_remediation(
     )
 }
 
+fn audit_process_policy_report(
+    state: &CoreRuntimeState,
+    report: &PreflightKillReport,
+    receipt: Option<&SignedExamReceipt>,
+) {
+    let exam_id = receipt
+        .map(|value| value.receipt.exam_id.clone())
+        .unwrap_or_else(|| state.loaded_policy.policy.exam_id.clone());
+    let session_id = receipt
+        .map(|value| value.receipt.session_id.as_str())
+        .or(state.active_session_id.as_deref());
+    let user_id = receipt
+        .map(|value| value.receipt.user_id.to_string())
+        .unwrap_or_else(|| "unknown-user".to_string());
+    let device_id = receipt
+        .map(|value| value.receipt.device_id.clone())
+        .unwrap_or_else(|| "unknown-device".to_string());
+    let timestamp = now_ms();
+
+    let emit = |event: &str, severity: &str, process: &models::ProcessPolicyMatch| {
+        let _ = append_audit_event(
+            timestamp,
+            event,
+            severity,
+            &state.session_state,
+            session_id,
+            &state.loaded_policy.digest_sha256,
+            json!({
+                "processName": process.name,
+                "pid": process.pid,
+                "identity": {
+                    "executablePath": process.executable_path,
+                    "creationTimeMs": process.creation_time_ms,
+                },
+                "policyAction": process.action,
+                "category": process.category,
+                "examId": exam_id,
+                "sessionId": session_id,
+                "userId": user_id,
+                "deviceId": device_id,
+                "timestamp": timestamp,
+            }),
+        );
+    };
+
+    for process in report
+        .hard_blocked_processes
+        .iter()
+        .chain(report.terminate_required_processes.iter())
+        .chain(report.continue_with_audit_processes.iter())
+        .chain(report.isolate_and_protect_processes.iter())
+        .chain(report.warnings.iter())
+    {
+        for (event, severity) in process_policy_audit_events(process) {
+            emit(event, severity, process);
+        }
+    }
+
+    for action in &report.actions {
+        let process = models::ProcessPolicyMatch {
+            pid: action.pid,
+            name: action.name.clone(),
+            executable_path: None,
+            creation_time_ms: None,
+            category: action.category.clone(),
+            action: action.action.clone(),
+            severity: "high".to_string(),
+            allow_exam_start: action.action == "attemptTerminateThenContinue",
+            attempt_terminate: true,
+            audit_required: true,
+        };
+        emit("ProcessTerminationAttempted", "WARN", &process);
+        emit(
+            if action.status == "terminated" {
+                "ProcessTerminationSucceeded"
+            } else {
+                "ProcessTerminationFailed"
+            },
+            if action.status == "terminated" {
+                "INFO"
+            } else if action.action == "attemptTerminateThenContinue" {
+                "WARN"
+            } else {
+                "BLOCK"
+            },
+            &process,
+        );
+    }
+}
+
+fn process_policy_audit_events(
+    process: &models::ProcessPolicyMatch,
+) -> Vec<(&'static str, &'static str)> {
+    let mut events = vec![("ProcessDetected", "INFO")];
+    if process.action == "hardBlock" {
+        events.push(("ProcessHardBlocked", "BLOCK"));
+    }
+    if process.action == "isolateAndProtect" || process.action == "continueAndAudit" {
+        events.push(("ProcessAllowedUnderIsolation", "WARN"));
+    }
+    if process.category.contains("remote") {
+        events.push(("RemoteControlAppPresent", "WARN"));
+    }
+    if process.category.contains("capture") {
+        events.push(("CaptureAppPresent", "WARN"));
+    }
+    events
+}
+
+fn audit_runtime_process_remediation(
+    state: &mut CoreRuntimeState,
+    report: &models::ProcessRemediationReport,
+) {
+    let receipt = state.active_service_authorization.as_ref();
+    let exam_id = receipt
+        .map(|value| value.receipt.exam_id.clone())
+        .unwrap_or_else(|| state.loaded_policy.policy.exam_id.clone());
+    let user_id = receipt
+        .map(|value| value.receipt.user_id.to_string())
+        .unwrap_or_else(|| "unknown-user".to_string());
+    let device_id = receipt
+        .map(|value| value.receipt.device_id.clone())
+        .unwrap_or_else(|| "unknown-device".to_string());
+    let timestamp = now_ms();
+
+    for action in &report.actions {
+        let audit_key = format!(
+            "{}:{}:{}",
+            action.pid,
+            action.name.to_ascii_lowercase(),
+            action.action
+        );
+        if state
+            .audited_process_policy
+            .get(&audit_key)
+            .map(|status| status == &action.status)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        state
+            .audited_process_policy
+            .insert(audit_key, action.status.clone());
+        let process = models::ProcessPolicyMatch {
+            pid: action.pid,
+            name: action.name.clone(),
+            executable_path: None,
+            creation_time_ms: None,
+            category: action.category.clone(),
+            action: action.action.clone(),
+            severity: if action.action == "hardBlock"
+                || action.action == "attemptTerminateThenBlock"
+            {
+                "critical".to_string()
+            } else {
+                "high".to_string()
+            },
+            allow_exam_start: action.action != "hardBlock"
+                && action.action != "attemptTerminateThenBlock",
+            attempt_terminate: action.action == "attemptTerminateThenBlock"
+                || action.action == "attemptTerminateThenContinue",
+            audit_required: action.action != "ignore",
+        };
+        let emit = |event: &str, severity: &str| {
+            let _ = append_audit_event(
+                timestamp,
+                event,
+                severity,
+                &state.session_state,
+                state.active_session_id.as_deref(),
+                &state.loaded_policy.digest_sha256,
+                json!({
+                    "processName": process.name,
+                    "pid": process.pid,
+                    "identity": {
+                        "executablePath": process.executable_path,
+                        "creationTimeMs": process.creation_time_ms,
+                    },
+                    "policyAction": process.action,
+                    "category": process.category,
+                    "examId": exam_id,
+                    "sessionId": state.active_session_id,
+                    "userId": user_id,
+                    "deviceId": device_id,
+                    "timestamp": timestamp,
+                }),
+            );
+        };
+
+        for (event, severity) in process_policy_audit_events(&process) {
+            emit(event, severity);
+        }
+        if process.attempt_terminate {
+            emit("ProcessTerminationAttempted", "WARN");
+            if action.status == "terminated" {
+                emit("ProcessTerminationSucceeded", "INFO");
+            } else {
+                emit("ProcessTerminationFailed", "WARN");
+            }
+        }
+    }
+}
+
 fn electron_owned_capture_guard_status(active: bool) -> CaptureGuardMutationResult {
     CaptureGuardMutationResult {
         applied: active,
@@ -413,6 +674,262 @@ fn terminate_with_service_fallback(
                 .map_err(|error| format!("{user_error}; elevated remediation failed: {error}"))
         }
     }
+}
+
+fn desktop_isolation_active() -> bool {
+    std::env::var("EDULEARN_EXAM_DESKTOP_ISOLATION_ACTIVE")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
+}
+
+fn sync_emergency_widget_visibility(state: &mut CoreRuntimeState) {
+    let desktop_isolation_active = desktop_isolation_active();
+    let event = state.emergency_widget.sync_visibility(
+        &state.session_state,
+        state.protection_status.kiosk_active,
+        desktop_isolation_active,
+        &state.loaded_policy.policy.emergency_restore_widget,
+        now_ms(),
+    );
+    let snapshot = state.emergency_widget.snapshot();
+    let _ = sync_bootstrapper_widget_state(
+        &snapshot,
+        state.active_session_id.as_deref(),
+        None,
+        &state.runtime_id,
+        state.protection_status.kiosk_active,
+        desktop_isolation_active,
+        now_ms(),
+    );
+    if let Some(event) = event {
+        let severity = if event == EVENT_WIDGET_DESTROYED { "info" } else { "warn" };
+        let _ = append_audit_event(
+            now_ms(),
+            event,
+            if severity == "warn" { "WARN" } else { "INFO" },
+            &state.session_state,
+            state.active_session_id.as_deref(),
+            &state.loaded_policy.digest_sha256,
+            emergency_audit_payload(
+                state.active_session_id.as_deref(),
+                None,
+                &state.runtime_id,
+                desktop_isolation_active,
+                state.protection_status.kiosk_active,
+                &state.session_state,
+                event,
+                snapshot.correlation_id.as_deref(),
+                json!({ "widget": snapshot }),
+            ),
+        );
+    }
+}
+
+fn process_bootstrapper_widget_interaction(state: &mut CoreRuntimeState) {
+    let Ok(Some(record)) = take_widget_interaction() else {
+        return;
+    };
+    let desktop_isolation_active = desktop_isolation_active();
+    match record.kind.as_str() {
+        "holdStarted" => {
+            if let Ok(event) = state.emergency_widget.start_hold(record.requested_at) {
+                let _ = append_audit_event(
+                    now_ms(),
+                    event,
+                    "WARN",
+                    &state.session_state,
+                    state.active_session_id.as_deref(),
+                    &state.loaded_policy.digest_sha256,
+                    emergency_audit_payload(
+                        state.active_session_id.as_deref(),
+                        record.exam_id.as_deref(),
+                        &state.runtime_id,
+                        desktop_isolation_active,
+                        state.protection_status.kiosk_active,
+                        &state.session_state,
+                        "Emergency restore hold started from bootstrapper widget.",
+                        record.correlation_id.as_deref(),
+                        json!({ "widgetId": record.widget_id, "nonce": record.nonce }),
+                    ),
+                );
+                let _ = event;
+            }
+            sync_emergency_widget_visibility(state);
+        }
+        "holdCancelled" => {
+            if let Some(event) = state.emergency_widget.cancel_hold() {
+                let _ = append_audit_event(
+                    now_ms(),
+                    event,
+                    "WARN",
+                    &state.session_state,
+                    state.active_session_id.as_deref(),
+                    &state.loaded_policy.digest_sha256,
+                    emergency_audit_payload(
+                        state.active_session_id.as_deref(),
+                        record.exam_id.as_deref(),
+                        &state.runtime_id,
+                        desktop_isolation_active,
+                        state.protection_status.kiosk_active,
+                        &state.session_state,
+                        "Emergency restore hold was cancelled from bootstrapper widget.",
+                        record.correlation_id.as_deref(),
+                        json!({ "widgetId": record.widget_id, "nonce": record.nonce }),
+                    ),
+                );
+                let _ = event;
+            }
+            sync_emergency_widget_visibility(state);
+        }
+        "restoreRequested" => {
+            let payload = EmergencyRestoreRequestPayload {
+                session_id: record.session_id.clone(),
+                exam_id: record.exam_id.clone(),
+                runtime_id: record.runtime_id.clone(),
+                reason: "user_emergency_widget".to_string(),
+                widget_id: record.widget_id.unwrap_or_else(|| "unknown-widget".to_string()),
+                requested_at: record.requested_at,
+                desktop_isolation_active: record.desktop_isolation_active,
+                kiosk_active: record.kiosk_active,
+                correlation_id: record
+                    .correlation_id
+                    .unwrap_or_else(|| format!("bootstrapper-widget-{}", record.requested_at)),
+                nonce: record.nonce.clone(),
+            };
+            let context = EmergencyRestoreValidationContext {
+                active_session_id: state.active_session_id.as_deref(),
+                current_session_state: &state.session_state,
+                expected_runtime_id: &state.runtime_id,
+                kiosk_active: state.protection_status.kiosk_active,
+                desktop_isolation_active,
+                now_ms: now_ms(),
+                policy: &state.loaded_policy.policy.emergency_restore_widget,
+            };
+            let _ = append_audit_event(
+                now_ms(),
+                EVENT_RESTORE_REQUESTED,
+                "WARN",
+                &state.session_state,
+                state.active_session_id.as_deref(),
+                &state.loaded_policy.digest_sha256,
+                emergency_audit_payload(
+                    state.active_session_id.as_deref(),
+                    payload.exam_id.as_deref(),
+                    &state.runtime_id,
+                    desktop_isolation_active,
+                    state.protection_status.kiosk_active,
+                    &state.session_state,
+                    &payload.reason,
+                    Some(&payload.correlation_id),
+                    json!({ "widgetId": payload.widget_id.clone(), "requestedAt": payload.requested_at }),
+                ),
+            );
+            let decision = state.emergency_widget.validate_request(&payload, &context);
+            if !decision.accepted {
+                let _ = append_audit_event(
+                    now_ms(),
+                    EVENT_RESTORE_REJECTED,
+                    "WARN",
+                    &state.session_state,
+                    state.active_session_id.as_deref(),
+                    &state.loaded_policy.digest_sha256,
+                    emergency_audit_payload(
+                        state.active_session_id.as_deref(),
+                        payload.exam_id.as_deref(),
+                        &state.runtime_id,
+                        desktop_isolation_active,
+                        state.protection_status.kiosk_active,
+                        &state.session_state,
+                        &decision.reason,
+                        decision.correlation_id.as_deref(),
+                        json!({ "decision": decision }),
+                    ),
+                );
+                sync_emergency_widget_visibility(state);
+                return;
+            }
+            let _ = append_audit_event(
+                now_ms(),
+                EVENT_RESTORE_ACCEPTED,
+                "WARN",
+                &state.session_state,
+                state.active_session_id.as_deref(),
+                &state.loaded_policy.digest_sha256,
+                emergency_audit_payload(
+                    state.active_session_id.as_deref(),
+                    payload.exam_id.as_deref(),
+                    &state.runtime_id,
+                    desktop_isolation_active,
+                    state.protection_status.kiosk_active,
+                    &state.session_state,
+                    "Bootstrapper widget emergency restore request accepted.",
+                    Some(&payload.correlation_id),
+                    json!({ "widgetId": payload.widget_id.clone() }),
+                ),
+            );
+            state.emergency_widget.mark_restoring();
+            let _ = append_audit_event(
+                now_ms(),
+                EVENT_RESTORE_STARTED,
+                "WARN",
+                &state.session_state,
+                state.active_session_id.as_deref(),
+                &state.loaded_policy.digest_sha256,
+                emergency_audit_payload(
+                    state.active_session_id.as_deref(),
+                    payload.exam_id.as_deref(),
+                    &state.runtime_id,
+                    desktop_isolation_active,
+                    state.protection_status.kiosk_active,
+                    &state.session_state,
+                    "Bootstrapper-owned emergency restore pipeline started.",
+                    Some(&payload.correlation_id),
+                    Value::Null,
+                ),
+            );
+            let delegated = write_bootstrapper_restore_request(
+                &payload,
+                payload.exam_id.as_deref(),
+                &state.runtime_id,
+                "trusted-widget",
+                "Emergency restore delegated to bootstrapper after Rust validation.",
+                false,
+                false,
+            )
+            .unwrap_or(false);
+            if !delegated {
+                let restore_payload = restore_active_protection(
+                    state,
+                    Some("Emergency restore requested from trusted widget.".to_string()),
+                );
+                let _ = append_audit_event(
+                    now_ms(),
+                    EVENT_RESTORE_COMPLETED,
+                    "INFO",
+                    &state.session_state,
+                    state.active_session_id.as_deref(),
+                    &state.loaded_policy.digest_sha256,
+                    emergency_audit_payload(
+                        state.active_session_id.as_deref(),
+                        payload.exam_id.as_deref(),
+                        &state.runtime_id,
+                        desktop_isolation_active,
+                        state.protection_status.kiosk_active,
+                        &state.session_state,
+                        "Emergency restore pipeline completed locally because bootstrapper delegation was unavailable.",
+                        Some(&payload.correlation_id),
+                        json!({ "restore": restore_payload }),
+                    ),
+                );
+            }
+            sync_emergency_widget_visibility(state);
+        }
+        _ => {}
+    }
+}
+
+fn emergency_widget_json(state: &CoreRuntimeState) -> Value {
+    to_value(state.emergency_widget.snapshot()).unwrap_or(Value::Null)
 }
 
 fn has_active_protection(state: &CoreRuntimeState) -> bool {
@@ -538,9 +1055,12 @@ fn restore_active_protection(state: &mut CoreRuntimeState, reason: Option<String
     state.active_session_id = None;
     state.exam_window_handle_hex = None;
     state.process_remediator = RuntimeProcessRemediator::new();
+    state.runtime_risk_level = "normal".to_string();
+    state.audited_process_policy.clear();
     state.runtime_scheduler.reset();
     state.cached_vm_signals.clear();
     state.active_service_authorization = None;
+    state.emergency_widget.mark_completed();
     let _ = transition_runtime_state(
         state,
         RuntimeLifecycleState::ShuttingDown,
@@ -562,6 +1082,7 @@ fn restore_active_protection(state: &mut CoreRuntimeState, reason: Option<String
 }
 
 fn handle_command(state: &mut CoreRuntimeState, request: &CoreRequest) -> CoreResponse {
+    process_bootstrapper_widget_interaction(state);
     match request.cmd.as_str() {
         "ping" => success_response(
             &request.request_id,
@@ -580,11 +1101,112 @@ fn handle_command(state: &mut CoreRuntimeState, request: &CoreRequest) -> CoreRe
                 "nativeCoreConnected": true,
             }),
         ),
-        "get_status" => success_response(&request.request_id, build_status_snapshot(state)),
+        "get_status" => {
+            sync_emergency_widget_visibility(state);
+            success_response(&request.request_id, build_status_snapshot(state))
+        }
         "get_policy_status" => value_from_serializable(
             &request.request_id,
             &state.loaded_policy,
         ),
+        "get_audit_status" => match audit_status() {
+            Ok(status) => value_from_serializable(&request.request_id, &status),
+            Err(error) => error_response(
+                &request.request_id,
+                "AUDIT_FAILURE",
+                format!("Failed to read audit status: {error}"),
+            ),
+        },
+        "verify_audit_chain" => match verify_audit_chain() {
+            Ok(verification) => value_from_serializable(&request.request_id, &verification),
+            Err(error) => error_response(
+                &request.request_id,
+                "AUDIT_TAMPERED",
+                format!("Failed to verify audit chain: {error}"),
+            ),
+        },
+        "drain_audit_upload_batch" => {
+            let payload: AuditBatchPayload =
+                match serde_json::from_value(request.payload.clone()) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        return error_response(
+                            &request.request_id,
+                            "INVALID_REQUEST",
+                            format!("Invalid drain_audit_upload_batch payload: {error}"),
+                        )
+                    }
+                };
+            match drain_audit_upload_batch(payload.limit.unwrap_or(100)) {
+                Ok(batch) => value_from_serializable(&request.request_id, &batch),
+                Err(error) => error_response(
+                    &request.request_id,
+                    "AUDIT_FAILURE",
+                    format!("Failed to drain audit upload batch: {error}"),
+                ),
+            }
+        },
+        "ack_audit_upload_batch" => {
+            let payload: AuditAckPayload =
+                match serde_json::from_value(request.payload.clone()) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        return error_response(
+                            &request.request_id,
+                            "INVALID_REQUEST",
+                            format!("Invalid ack_audit_upload_batch payload: {error}"),
+                        )
+                    }
+                };
+            match ack_audit_upload_batch(
+                &payload.audit_ids,
+                payload.uploaded_at_ms.unwrap_or_else(now_ms),
+            ) {
+                Ok(acknowledged_count) => success_response(
+                    &request.request_id,
+                    json!({
+                        "acknowledgedCount": acknowledged_count,
+                        "audit": audit_status().ok(),
+                    }),
+                ),
+                Err(error) => error_response(
+                    &request.request_id,
+                    "AUDIT_FAILURE",
+                    format!("Failed to acknowledge audit upload batch: {error}"),
+                ),
+            }
+        },
+        "record_audit_upload_failure" => {
+            let payload: AuditFailurePayload =
+                match serde_json::from_value(request.payload.clone()) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        return error_response(
+                            &request.request_id,
+                            "INVALID_REQUEST",
+                            format!("Invalid record_audit_upload_failure payload: {error}"),
+                        )
+                    }
+                };
+            match record_audit_upload_failure(
+                &payload.audit_ids,
+                &payload.reason,
+                payload.failed_at_ms.unwrap_or_else(now_ms),
+            ) {
+                Ok(failed_count) => success_response(
+                    &request.request_id,
+                    json!({
+                        "failedCount": failed_count,
+                        "audit": audit_status().ok(),
+                    }),
+                ),
+                Err(error) => error_response(
+                    &request.request_id,
+                    "AUDIT_FAILURE",
+                    format!("Failed to record audit upload failure: {error}"),
+                ),
+            }
+        },
         "get_exam_device_identity" => match get_exam_device_identity() {
             Ok(identity) => value_from_serializable(&request.request_id, &identity),
             Err(error) => error_response(
@@ -613,7 +1235,24 @@ fn handle_command(state: &mut CoreRuntimeState, request: &CoreRequest) -> CoreRe
                     error,
                 ),
             }
-        }
+        },
+        "sign_audit_upload" => {
+            let payload: AuditUploadSigningPayload =
+                match serde_json::from_value(request.payload.clone()) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        return error_response(
+                            &request.request_id,
+                            "INVALID_REQUEST",
+                            format!("Invalid sign_audit_upload payload: {error}"),
+                        )
+                    }
+                };
+            match sign_audit_upload(payload, now_ms()) {
+                Ok(signed) => value_from_serializable(&request.request_id, &signed),
+                Err(error) => error_response(&request.request_id, "AUDIT_FAILURE", error),
+            }
+        },
         "load_policy" => {
             if state.active_session_id.is_some() {
                 return error_response(
@@ -746,6 +1385,11 @@ fn handle_command(state: &mut CoreRuntimeState, request: &CoreRequest) -> CoreRe
                 &state.loaded_policy,
                 payload.service_authorization.as_ref(),
             );
+            audit_process_policy_report(
+                state,
+                &report,
+                payload.service_authorization.as_ref(),
+            );
             value_from_serializable(&request.request_id, &report)
         }
         "run_preflight" => {
@@ -861,18 +1505,36 @@ fn handle_command(state: &mut CoreRuntimeState, request: &CoreRequest) -> CoreRe
                 );
             }
 
+            let mut startup_process_policy = Vec::new();
+            let mut startup_risk_level = "normal".to_string();
             if !payload.dry_run {
                 let remediation_report = run_preflight_process_remediation(
                     &mut state.process_collector,
                     &state.loaded_policy,
                     payload.service_authorization.as_ref(),
                 );
+                audit_process_policy_report(
+                    state,
+                    &remediation_report,
+                    payload.service_authorization.as_ref(),
+                );
+                startup_risk_level = remediation_report.runtime_risk_level.clone();
+                startup_process_policy.extend(
+                    remediation_report
+                        .hard_blocked_processes
+                        .iter()
+                        .chain(remediation_report.terminate_required_processes.iter())
+                        .chain(remediation_report.continue_with_audit_processes.iter())
+                        .chain(remediation_report.isolate_and_protect_processes.iter())
+                        .chain(remediation_report.warnings.iter())
+                        .cloned(),
+                );
                 if !remediation_report.all_clear {
                     return error_response(
                         &request.request_id,
                         "PROTECTION_FAILURE",
                         format!(
-                            "Protected exam session could not close prohibited process(es): {}.",
+                            "Protected exam session is blocked by hard-blocked or required-termination process(es): {}.",
                             remediation_report.remaining_names.join(", ")
                         ),
                     );
@@ -885,6 +1547,20 @@ fn handle_command(state: &mut CoreRuntimeState, request: &CoreRequest) -> CoreRe
             );
             state.precheck_report = Some(preflight_result.report.clone());
             state.preflight_result = Some(preflight_result.clone());
+            if payload.dry_run {
+                startup_risk_level = preflight_result.decision.runtime_risk_level.clone();
+                startup_process_policy.extend(
+                    preflight_result
+                        .decision
+                        .hard_blocked_processes
+                        .iter()
+                        .chain(preflight_result.decision.terminate_required_processes.iter())
+                        .chain(preflight_result.decision.continue_with_audit_processes.iter())
+                        .chain(preflight_result.decision.isolate_and_protect_processes.iter())
+                        .chain(preflight_result.decision.warnings.iter())
+                        .cloned(),
+                );
+            }
 
             if !payload.dry_run && !preflight_result.decision.can_enter_exam {
                 if let Err(error) = transition_session_state(
@@ -909,7 +1585,11 @@ fn handle_command(state: &mut CoreRuntimeState, request: &CoreRequest) -> CoreRe
             }
 
             let desktop_state = capture_desktop_state();
-            let result = build_start_exam_session_result(now_ms(), payload.clone(), desktop_state.clone());
+            state.audited_process_policy.clear();
+            let mut result =
+                build_start_exam_session_result(now_ms(), payload.clone(), desktop_state.clone());
+            result.runtime_risk_level = startup_risk_level.clone();
+            result.process_policy = startup_process_policy;
             if let Err(error) =
                 transition_session_state(state, &result.session_state, false)
             {
@@ -924,7 +1604,107 @@ fn handle_command(state: &mut CoreRuntimeState, request: &CoreRequest) -> CoreRe
             state.desktop_state_snapshot = Some(desktop_state);
             state.exam_window_handle_hex = payload.window_handle_hex.clone();
             state.active_service_authorization = payload.service_authorization.clone();
+            state.runtime_risk_level = startup_risk_level;
+            if state.runtime_risk_level == "elevated" {
+                let receipt = payload.exam_key.as_ref();
+                let _ = append_audit_event(
+                    now_ms(),
+                    "ExamStartedWithElevatedRisk",
+                    "WARN",
+                    &state.session_state,
+                    state.active_session_id.as_deref(),
+                    &state.loaded_policy.digest_sha256,
+                    json!({
+                        "examId": payload.exam_id,
+                        "sessionId": payload.session_id,
+                        "userId": receipt.map(|value| value.receipt.user_id.to_string()).unwrap_or_else(|| "unknown-user".to_string()),
+                        "deviceId": receipt.map(|value| value.receipt.device_id.clone()).unwrap_or_else(|| "unknown-device".to_string()),
+                        "runtimeRiskLevel": state.runtime_risk_level,
+                        "captureProtection": "best-effort",
+                    }),
+                );
+            }
+            sync_emergency_widget_visibility(state);
             value_from_serializable(&request.request_id, &result)
+        }
+        "notify_visual_kiosk_ready" => {
+            let payload: NotifyVisualKioskReadyPayload = match serde_json::from_value(request.payload.clone()) {
+                Ok(value) => value,
+                Err(error) => {
+                    return error_response(
+                        &request.request_id,
+                        "INVALID_REQUEST",
+                        format!("Invalid notify_visual_kiosk_ready payload: {error}"),
+                    )
+                }
+            };
+
+            if let (Some(expected_session_id), Some(active_session_id)) =
+                (payload.session_id.as_ref(), state.active_session_id.as_ref())
+            {
+                if expected_session_id != active_session_id {
+                    return error_response(
+                        &request.request_id,
+                        "INVALID_REQUEST",
+                        format!(
+                            "Session mismatch. Active session is {}, but {} was requested for visual kiosk handoff.",
+                            active_session_id, expected_session_id
+                        ),
+                    );
+                }
+            }
+
+            if state.session_state != session_guard::SESSION_STATE_ENTERING_KIOSK {
+                return error_response(
+                    &request.request_id,
+                    "INVALID_REQUEST",
+                    format!(
+                        "Visual kiosk handoff requires {}, current state is {}.",
+                        session_guard::SESSION_STATE_ENTERING_KIOSK, state.session_state
+                    ),
+                );
+            }
+
+            if let Err(error) = transition_session_state(
+                state,
+                session_guard::SESSION_STATE_EXAM_RUNNING_CONFIRMED,
+                false,
+            ) {
+                return error_response(
+                    &request.request_id,
+                    "PROTECTION_FAILURE",
+                    error,
+                );
+            }
+
+            let log_line = models::ProtectionLogLine {
+                timestamp: now_ms(),
+                level: "success".to_string(),
+                code: "KIOSK_HANDOFF_COMPLETED".to_string(),
+                message: "Visual kiosk handoff confirmed. Exam session is now running.".to_string(),
+            };
+
+            let result = models::ProtectionTransitionResult {
+                transitioned_at: now_ms(),
+                session_state: session_guard::SESSION_STATE_EXAM_RUNNING_CONFIRMED.to_string(),
+                protection_status: state.protection_status.clone(),
+                restored_desktop: None,
+                log_lines: vec![log_line],
+            };
+
+            match to_value(&result) {
+                Ok(mut value) => {
+                    if let Value::Object(map) = &mut value {
+                        map.insert("emergencyRestore".to_string(), emergency_widget_json(state));
+                    }
+                    success_response(&request.request_id, value)
+                }
+                Err(error) => error_response(
+                    &request.request_id,
+                    "INVALID_REQUEST",
+                    format!("Failed to serialize result: {error}"),
+                ),
+            }
         }
         "enter_kiosk" => {
             let payload: EnterKioskPayload = match serde_json::from_value(request.payload.clone()) {
@@ -1077,7 +1857,20 @@ fn handle_command(state: &mut CoreRuntimeState, request: &CoreRequest) -> CoreRe
                     error,
                 );
             }
-            value_from_serializable(&request.request_id, &result)
+            sync_emergency_widget_visibility(state);
+            match to_value(&result) {
+                Ok(mut value) => {
+                    if let Value::Object(map) = &mut value {
+                        map.insert("emergencyRestore".to_string(), emergency_widget_json(state));
+                    }
+                    success_response(&request.request_id, value)
+                }
+                Err(error) => error_response(
+                    &request.request_id,
+                    "IPC_FAILURE",
+                    format!("Failed to serialize kiosk result: {error}"),
+                ),
+            }
         }
         "exit_exam_session" => {
             let payload: ExitExamSessionPayload = match serde_json::from_value(request.payload.clone()) {
@@ -1108,6 +1901,173 @@ fn handle_command(state: &mut CoreRuntimeState, request: &CoreRequest) -> CoreRe
 
             let restore_payload = restore_active_protection(state, payload.reason);
             success_response(&request.request_id, restore_payload)
+        }
+        "request_emergency_restore" => {
+            let payload: EmergencyRestoreRequestPayload =
+                match serde_json::from_value(request.payload.clone()) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        return error_response(
+                            &request.request_id,
+                            "INVALID_REQUEST",
+                            format!("Invalid request_emergency_restore payload: {error}"),
+                        )
+                    }
+                };
+            let desktop_isolation_active = desktop_isolation_active();
+            let context = EmergencyRestoreValidationContext {
+                active_session_id: state.active_session_id.as_deref(),
+                current_session_state: &state.session_state,
+                expected_runtime_id: &state.runtime_id,
+                kiosk_active: state.protection_status.kiosk_active,
+                desktop_isolation_active,
+                now_ms: now_ms(),
+                policy: &state.loaded_policy.policy.emergency_restore_widget,
+            };
+            let _ = append_audit_event(
+                now_ms(),
+                EVENT_RESTORE_REQUESTED,
+                "WARN",
+                &state.session_state,
+                state.active_session_id.as_deref(),
+                &state.loaded_policy.digest_sha256,
+                emergency_audit_payload(
+                    state.active_session_id.as_deref(),
+                    payload.exam_id.as_deref(),
+                    &state.runtime_id,
+                    desktop_isolation_active,
+                    state.protection_status.kiosk_active,
+                    &state.session_state,
+                    &payload.reason,
+                    Some(&payload.correlation_id),
+                    json!({
+                        "widgetId": payload.widget_id.clone(),
+                        "requestedAt": payload.requested_at,
+                    }),
+                ),
+            );
+
+            let decision = state.emergency_widget.validate_request(&payload, &context);
+            if !decision.accepted {
+                let _ = append_audit_event(
+                    now_ms(),
+                    EVENT_RESTORE_REJECTED,
+                    "WARN",
+                    &state.session_state,
+                    state.active_session_id.as_deref(),
+                    &state.loaded_policy.digest_sha256,
+                    emergency_audit_payload(
+                        state.active_session_id.as_deref(),
+                        payload.exam_id.as_deref(),
+                        &state.runtime_id,
+                        desktop_isolation_active,
+                        state.protection_status.kiosk_active,
+                        &state.session_state,
+                        &decision.reason,
+                        decision.correlation_id.as_deref(),
+                        json!({ "decision": decision.clone() }),
+                    ),
+                );
+                return error_response(&request.request_id, "PROTECTION_FAILURE", decision.reason);
+            }
+
+            let _ = append_audit_event(
+                now_ms(),
+                EVENT_RESTORE_ACCEPTED,
+                "WARN",
+                &state.session_state,
+                state.active_session_id.as_deref(),
+                &state.loaded_policy.digest_sha256,
+                emergency_audit_payload(
+                    state.active_session_id.as_deref(),
+                    payload.exam_id.as_deref(),
+                    &state.runtime_id,
+                    desktop_isolation_active,
+                    state.protection_status.kiosk_active,
+                    &state.session_state,
+                    "Emergency restore request accepted.",
+                    decision.correlation_id.as_deref(),
+                    json!({ "decision": decision.clone() }),
+                ),
+            );
+            state.emergency_widget.mark_restoring();
+            let _ = append_audit_event(
+                now_ms(),
+                EVENT_RESTORE_STARTED,
+                "WARN",
+                &state.session_state,
+                state.active_session_id.as_deref(),
+                &state.loaded_policy.digest_sha256,
+                emergency_audit_payload(
+                    state.active_session_id.as_deref(),
+                    payload.exam_id.as_deref(),
+                    &state.runtime_id,
+                    desktop_isolation_active,
+                    state.protection_status.kiosk_active,
+                    &state.session_state,
+                    "Emergency restore pipeline started.",
+                    Some(&payload.correlation_id),
+                    Value::Null,
+                ),
+            );
+
+            let delegated = write_bootstrapper_restore_request(
+                &payload,
+                payload.exam_id.as_deref(),
+                &state.runtime_id,
+                "trusted-ipc",
+                "Emergency restore was delegated to bootstrapper after Rust validation.",
+                false,
+                false,
+            )
+            .unwrap_or(false);
+            if delegated {
+                sync_emergency_widget_visibility(state);
+                success_response(
+                    &request.request_id,
+                    json!({
+                        "decision": decision,
+                        "restoreDelegatedToBootstrapper": true,
+                        "emergencyRestore": state.emergency_widget.snapshot(),
+                        "sessionState": state.session_state,
+                        "protectionStatus": state.protection_status,
+                    }),
+                )
+            } else {
+                let restore_payload = restore_active_protection(
+                    state,
+                    Some("Emergency restore requested from trusted widget.".to_string()),
+                );
+                let _ = append_audit_event(
+                    now_ms(),
+                    EVENT_RESTORE_COMPLETED,
+                    "INFO",
+                    &state.session_state,
+                    state.active_session_id.as_deref(),
+                    &state.loaded_policy.digest_sha256,
+                    emergency_audit_payload(
+                        state.active_session_id.as_deref(),
+                        payload.exam_id.as_deref(),
+                        &state.runtime_id,
+                        desktop_isolation_active,
+                        state.protection_status.kiosk_active,
+                        &state.session_state,
+                        "Emergency restore pipeline completed.",
+                        Some(&payload.correlation_id),
+                        json!({ "restore": restore_payload.clone() }),
+                    ),
+                );
+                success_response(
+                    &request.request_id,
+                    json!({
+                        "decision": decision,
+                        "restore": restore_payload,
+                        "emergencyRestore": state.emergency_widget.snapshot(),
+                        "sessionState": state.session_state,
+                        "protectionStatus": state.protection_status,
+                    }),
+                )
+            }
         }
         "exit_kiosk" => {
             if state.active_session_id.is_none() {
@@ -1162,7 +2122,10 @@ fn handle_command(state: &mut CoreRuntimeState, request: &CoreRequest) -> CoreRe
             let tick_started = Instant::now();
             if state.active_session_id.is_none()
                 || !state.protection_status.kiosk_active
-                || state.session_state != SESSION_STATE_EXAM_RUNNING
+                || (state.session_state != SESSION_STATE_EXAM_RUNNING
+                    && state.session_state
+                        != session_guard::SESSION_STATE_EXAM_RUNNING_CONFIRMED
+                    && state.session_state != session_guard::SESSION_STATE_ENTERING_KIOSK)
             {
                 return error_response(
                     &request.request_id,
@@ -1522,6 +2485,7 @@ fn handle_command(state: &mut CoreRuntimeState, request: &CoreRequest) -> CoreRe
                     )
                 },
             );
+            audit_runtime_process_remediation(state, &process_remediation);
             let remediation_time_ms = remediation_started.elapsed().as_millis() as u64;
             state
                 .runtime_state_engine
@@ -1607,12 +2571,28 @@ fn handle_command(state: &mut CoreRuntimeState, request: &CoreRequest) -> CoreRe
                 );
             }
             state.protection_status = result.protection_status.clone();
+            state.runtime_risk_level = result.runtime_risk_level.clone();
+            sync_emergency_widget_visibility(state);
 
-            value_from_serializable(&request.request_id, &result)
+            match to_value(&result) {
+                Ok(mut value) => {
+                    if let Value::Object(map) = &mut value {
+                        map.insert("emergencyRestore".to_string(), emergency_widget_json(state));
+                    }
+                    success_response(&request.request_id, value)
+                }
+                Err(error) => error_response(
+                    &request.request_id,
+                    "IPC_FAILURE",
+                    format!("Failed to serialize runtime monitor result: {error}"),
+                ),
+            }
         }
-        "get_protection_status" => success_response(
-            &request.request_id,
-            json!({
+        "get_protection_status" => {
+            sync_emergency_widget_visibility(state);
+            success_response(
+                &request.request_id,
+                json!({
                 "sessionState": state.session_state,
                 "activeSessionId": state.active_session_id,
                 "desktopStateCaptured": state.desktop_state_snapshot.is_some(),
@@ -1620,9 +2600,12 @@ fn handle_command(state: &mut CoreRuntimeState, request: &CoreRequest) -> CoreRe
                 "processWatcherProducer": state.process_event_producer.status(),
                 "runtimeStateEngine": state.runtime_state_engine.snapshot(),
                 "runtimeTelemetry": state.runtime_telemetry.last_snapshot(),
+                "runtimeRiskLevel": state.runtime_risk_level,
                 "runtimeEvents": state.runtime_event_bus.recent_events(25),
-            }),
-        ),
+                "emergencyRestore": state.emergency_widget.snapshot(),
+                }),
+            )
+        }
         "shutdown" => {
             let had_active_protection = has_active_protection(state);
 
@@ -1672,15 +2655,42 @@ fn handle_command(state: &mut CoreRuntimeState, request: &CoreRequest) -> CoreRe
                 request.cmd
             ),
         ),
-        _ => error_response(
-            &request.request_id,
-            "INVALID_COMMAND",
-            format!("Unsupported command: {}", request.cmd),
-        ),
+        _ => {
+            eprintln!(
+                "[WARN] Unknown command received: {}. Returning non-fatal error.",
+                request.cmd
+            );
+            error_response(
+                &request.request_id,
+                "UNKNOWN_COMMAND",
+                format!("Unknown command: {}. This is not a fatal error.", request.cmd),
+            )
+        }
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BootstrapperEmergencyReport {
+    trigger: String,
+    session_id: Option<String>,
+    exam_id: Option<String>,
+    runtime_id: Option<String>,
+    widget_id: Option<String>,
+    correlation_id: Option<String>,
+    requested_at: u64,
+    desktop_isolation_active: bool,
+    fallback_used: bool,
+    timeout_used: bool,
+    desktop_switched_back: bool,
+    desktop_destroyed: bool,
+    detail: String,
+}
+
 fn run_emergency_restore() -> io::Result<()> {
+    let bootstrapper_report = std::env::var("EDULEARN_BOOTSTRAPPER_EMERGENCY_REPORT")
+        .ok()
+        .and_then(|value| serde_json::from_str::<BootstrapperEmergencyReport>(&value).ok());
     let desktop = restore_default_input_desktop();
     let overlay = deactivate_native_overlays();
     let capture = deactivate_capture_guard();
@@ -1690,6 +2700,121 @@ fn run_emergency_restore() -> io::Result<()> {
     let focus = deactivate_focus_guard();
     let input = deactivate_input_guard();
     let taskbar = show_taskbar(true);
+
+    if let Some(report) = bootstrapper_report.as_ref() {
+        if report.timeout_used {
+            let _ = append_audit_event(
+                now_ms(),
+                EVENT_RESTORE_TIMEOUT,
+                "WARN",
+                SESSION_STATE_IDLE,
+                report.session_id.as_deref(),
+                "emergency-restore",
+                emergency_audit_payload(
+                    report.session_id.as_deref(),
+                    report.exam_id.as_deref(),
+                    report.runtime_id.as_deref().unwrap_or("rust-core"),
+                    report.desktop_isolation_active,
+                    false,
+                    SESSION_STATE_IDLE,
+                    "Bootstrapper emergency restore timed out waiting for Rust acknowledgement.",
+                    report.correlation_id.as_deref(),
+                    json!({ "trigger": report.trigger, "widgetId": report.widget_id, "requestedAt": report.requested_at }),
+                ),
+            );
+        }
+        if report.fallback_used {
+            let _ = append_audit_event(
+                now_ms(),
+                EVENT_RESTORE_BOOTSTRAPPER_FALLBACK,
+                "WARN",
+                SESSION_STATE_IDLE,
+                report.session_id.as_deref(),
+                "emergency-restore",
+                emergency_audit_payload(
+                    report.session_id.as_deref(),
+                    report.exam_id.as_deref(),
+                    report.runtime_id.as_deref().unwrap_or("rust-core"),
+                    report.desktop_isolation_active,
+                    false,
+                    SESSION_STATE_IDLE,
+                    &report.detail,
+                    report.correlation_id.as_deref(),
+                    json!({ "trigger": report.trigger }),
+                ),
+            );
+        }
+        if report.desktop_switched_back {
+            let _ = append_audit_event(
+                now_ms(),
+                EVENT_RESTORE_DESKTOP_SWITCH,
+                "INFO",
+                SESSION_STATE_IDLE,
+                report.session_id.as_deref(),
+                "emergency-restore",
+                emergency_audit_payload(
+                    report.session_id.as_deref(),
+                    report.exam_id.as_deref(),
+                    report.runtime_id.as_deref().unwrap_or("rust-core"),
+                    report.desktop_isolation_active,
+                    false,
+                    SESSION_STATE_IDLE,
+                    "Bootstrapper switched back to the default desktop during emergency restore.",
+                    report.correlation_id.as_deref(),
+                    Value::Null,
+                ),
+            );
+        }
+        if report.desktop_destroyed {
+            let _ = append_audit_event(
+                now_ms(),
+                EVENT_RESTORE_DESKTOP_DESTROYED,
+                "INFO",
+                SESSION_STATE_IDLE,
+                report.session_id.as_deref(),
+                "emergency-restore",
+                emergency_audit_payload(
+                    report.session_id.as_deref(),
+                    report.exam_id.as_deref(),
+                    report.runtime_id.as_deref().unwrap_or("rust-core"),
+                    report.desktop_isolation_active,
+                    false,
+                    SESSION_STATE_IDLE,
+                    "Bootstrapper destroyed the isolated desktop during emergency restore.",
+                    report.correlation_id.as_deref(),
+                    Value::Null,
+                ),
+            );
+        }
+    }
+
+    if !(taskbar.applied && desktop.applied) {
+        let _ = append_audit_event(
+            now_ms(),
+            EVENT_RESTORE_FAILED,
+            "WARN",
+            SESSION_STATE_IDLE,
+            bootstrapper_report.as_ref().and_then(|report| report.session_id.as_deref()),
+            "emergency-restore",
+            emergency_audit_payload(
+                bootstrapper_report.as_ref().and_then(|report| report.session_id.as_deref()),
+                bootstrapper_report.as_ref().and_then(|report| report.exam_id.as_deref()),
+                bootstrapper_report
+                    .as_ref()
+                    .and_then(|report| report.runtime_id.as_deref())
+                    .unwrap_or("rust-core"),
+                bootstrapper_report
+                    .as_ref()
+                    .map(|report| report.desktop_isolation_active)
+                    .unwrap_or(false),
+                false,
+                SESSION_STATE_IDLE,
+                "Emergency restore could not fully restore the desktop or taskbar state.",
+                bootstrapper_report.as_ref().and_then(|report| report.correlation_id.as_deref()),
+                json!({ "desktop": desktop.detail, "taskbar": taskbar.detail }),
+            ),
+        );
+    }
 
     write_json_line(&json!({
         "ok": taskbar.applied && desktop.applied,
@@ -1708,6 +2833,7 @@ fn run_emergency_restore() -> io::Result<()> {
 
 fn initial_runtime_state() -> CoreRuntimeState {
     CoreRuntimeState {
+        runtime_id: core_runtime_id(),
         precheck_report: None,
         preflight_result: None,
         session_state: SESSION_STATE_INIT.to_string(),
@@ -1721,6 +2847,9 @@ fn initial_runtime_state() -> CoreRuntimeState {
         runtime_event_bus: RuntimeEventBus::default(),
         runtime_state_engine: RuntimeStateEngine::new(),
         runtime_telemetry: RuntimeTelemetry::default(),
+        runtime_risk_level: "normal".to_string(),
+        audited_process_policy: BTreeMap::new(),
+        emergency_widget: EmergencyRestoreWidgetController::default(),
         runtime_scheduler: RuntimeMonitorScheduler::new(
             DEFAULT_ENVIRONMENT_SCAN_INTERVAL_MS,
         ),
@@ -1933,16 +3062,21 @@ fn main() -> io::Result<()> {
 mod core_state_tests {
     use super::{
         build_idle_protection_status, can_sync_display_topology, has_active_protection,
+        process_policy_audit_events,
         CoreRuntimeState,
+        EmergencyRestoreWidgetController,
         ProcessCollector, RuntimeMonitorScheduler, RuntimeProcessRemediator,
         LoadedExamPolicy, ProcessCreationWatcher, RuntimeEventBus, RuntimeProcessWatcherProducer,
         RuntimeStateEngine, RuntimeTelemetry,
         TrustedPolicyKeys,
         DEFAULT_ENVIRONMENT_SCAN_INTERVAL_MS, SESSION_STATE_INIT,
     };
+    use crate::models::ProcessPolicyMatch;
+    use std::collections::BTreeMap;
 
     fn idle_state() -> CoreRuntimeState {
         CoreRuntimeState {
+            runtime_id: "test-runtime".to_string(),
             precheck_report: None,
             preflight_result: None,
             session_state: SESSION_STATE_INIT.to_string(),
@@ -1956,6 +3090,9 @@ mod core_state_tests {
             runtime_event_bus: RuntimeEventBus::default(),
             runtime_state_engine: RuntimeStateEngine::new(),
             runtime_telemetry: RuntimeTelemetry::default(),
+            runtime_risk_level: "normal".to_string(),
+            audited_process_policy: BTreeMap::new(),
+            emergency_widget: EmergencyRestoreWidgetController::default(),
             runtime_scheduler: RuntimeMonitorScheduler::new(
                 DEFAULT_ENVIRONMENT_SCAN_INTERVAL_MS,
             ),
@@ -1992,5 +3129,31 @@ mod core_state_tests {
         state.protection_status.kiosk_active = false;
         assert!(!can_sync_display_topology(&state));
         state.active_session_id = None;
+    }
+
+    #[test]
+    fn allowed_under_isolation_process_emits_required_audit_events() {
+        let process = ProcessPolicyMatch {
+            pid: 42,
+            name: "AnyDesk.exe".to_string(),
+            executable_path: Some("C:\\AnyDesk.exe".to_string()),
+            creation_time_ms: Some(1),
+            category: "remote-control".to_string(),
+            action: "isolateAndProtect".to_string(),
+            severity: "high".to_string(),
+            allow_exam_start: true,
+            attempt_terminate: false,
+            audit_required: true,
+        };
+
+        let events = process_policy_audit_events(&process)
+            .into_iter()
+            .map(|(event, _)| event)
+            .collect::<Vec<_>>();
+
+        assert!(events.contains(&"ProcessDetected"));
+        assert!(events.contains(&"ProcessAllowedUnderIsolation"));
+        assert!(events.contains(&"RemoteControlAppPresent"));
+        assert!(!events.contains(&"ProcessHardBlocked"));
     }
 }
