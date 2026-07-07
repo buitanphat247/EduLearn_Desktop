@@ -2,6 +2,16 @@ const fs = require('fs');
 const path = require('path');
 const { app } = require('electron');
 
+function resolveLoggerBaseDir(appLike = app) {
+  try {
+    if (appLike && !appLike.isDestroyed?.()) {
+      return appLike.getPath("userData");
+    }
+  } catch {}
+
+  return path.resolve(__dirname, "..");
+}
+
 class Logger {
   constructor() {
     this.streams = {};
@@ -17,8 +27,9 @@ class Logger {
     const date = new Date();
     const dateString = date.toISOString().split('T')[0]; // YYYY-MM-DD
     
-    // Create logs/YYYY-MM-DD folder relative to user data or cwd
-    const baseDir = app.isPackaged ? app.getPath('userData') : process.cwd();
+    // Keep logs out of the current working directory because Windows can
+    // launch Electron from system32, which is not writable for our process.
+    const baseDir = resolveLoggerBaseDir();
     this.logDir = path.join(baseDir, 'logs', dateString);
 
     if (!fs.existsSync(this.logDir)) {
@@ -127,5 +138,6 @@ class Logger {
 const globalLogger = new Logger();
 
 module.exports = {
-  logger: globalLogger
+  logger: globalLogger,
+  resolveLoggerBaseDir,
 };

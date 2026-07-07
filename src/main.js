@@ -8,7 +8,7 @@ const { createDesktopCoreRuntime } = require("./core-runtime");
 const { createDesktopProtectionController } = require("./protection-controller");
 const { DESKTOP_CORE_CHANNELS } = require("./contracts/safe-exam");
 const { createWatchdogHeartbeat } = require("./watchdog-heartbeat");
-const { logger } = require("./logger");
+const { logger, resolveLoggerBaseDir } = require("./logger");
 const { createExamGuardTracer } = require("./exam-guard-trace");
 const { createAudioGuard } = require("./audio-guard");
 
@@ -30,7 +30,7 @@ const protectionController = createDesktopProtectionController({
   globalShortcut,
 });
 const examGuardTracer = createExamGuardTracer({
-  baseDir: process.cwd(),
+  baseDir: resolveLoggerBaseDir(),
 });
 const desktopCoreRuntime = createDesktopCoreRuntime({
   platform: process.platform,

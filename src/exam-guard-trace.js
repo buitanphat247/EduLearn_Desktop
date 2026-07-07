@@ -2,7 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { logger } = require("./logger");
+const { logger, resolveLoggerBaseDir } = require("./logger");
 
 const TRACE_CHANNEL = "exam-guard:trace";
 const MAX_HISTORY = 10;
@@ -21,7 +21,7 @@ function trimHistory(list) {
   }
 }
 
-function createExamGuardTracer({ baseDir = process.cwd() } = {}) {
+function createExamGuardTracer({ baseDir = resolveLoggerBaseDir() } = {}) {
   const stateHistory = [];
   const ipcHistory = [];
   const watcherHistory = [];
