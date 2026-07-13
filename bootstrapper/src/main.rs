@@ -105,6 +105,12 @@ struct BootstrapConfig {
     startup_grace_ms: u64,
     electron_args: Vec<String>,
     desktop_isolation: DesktopIsolationConfig,
+    /// Max number of times the Electron child may be relaunched if it dies
+    /// unexpectedly during a session. Default 0 = disabled (the historical
+    /// behaviour: any child death restores the desktop and exits). Enabling this
+    /// requires validating the legitimate-exit flow on-device so a normal exam
+    /// completion is not relaunched.
+    electron_restart_max: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,9 +143,18 @@ impl BootstrapConfig {
         let mut startup_grace_ms = DEFAULT_STARTUP_GRACE_MS;
         let mut electron_args = Vec::new();
         let mut desktop_isolation = DesktopIsolationConfig::default();
+        let mut electron_restart_max: u32 = 0;
 
         while let Some(argument) = arguments.next() {
             match argument.as_str() {
+                "--electron-restart-max" => {
+                    let value = arguments.next().ok_or_else(|| {
+                        "--electron-restart-max requires a value.".to_string()
+                    })?;
+                    electron_restart_max = value.parse::<u32>().map_err(|_| {
+                        format!("--electron-restart-max must be a non-negative integer, got {value:?}.")
+                    })?;
+                }
                 "--electron" => {
                     electron_path = Some(PathBuf::from(
                         arguments
@@ -190,8 +205,12 @@ impl BootstrapConfig {
             startup_grace_ms,
             electron_args,
             desktop_isolation,
+            electron_restart_max,
         };
         validate_desktop_name(&config.desktop_isolation.desktop_name)?;
+        if config.electron_restart_max > 10 {
+            return Err("electron restart max must be between 0 and 10.".to_string());
+        }
         if config.heartbeat_timeout_ms < 2_000 || config.heartbeat_timeout_ms > 120_000 {
             return Err("heartbeat timeout must be between 2000 and 120000 ms.".to_string());
         }
@@ -205,6 +224,21 @@ impl BootstrapConfig {
         }
         Ok(config)
     }
+}
+
+/// Minimum delay between Electron relaunches, so a child that crashes at startup
+/// cannot spin the restart budget in a tight loop.
+const RESTART_BACKOFF_MS: u64 = 1_500;
+
+/// Whether the Electron child should be relaunched after it exited, given the
+/// exit code and the remaining restart budget.
+///
+/// Only ABNORMAL exits (non-zero code) are restarted: a clean `exit 0` is how a
+/// normally-completed exam quits, and relaunching it would trap the student back
+/// on the locked desktop. A killed/crashed Electron exits non-zero, which is the
+/// case we actually want to recover from.
+fn should_restart_child(exit_code: i32, restarts_used: u32, restart_max: u32) -> bool {
+    exit_code != 0 && restarts_used < restart_max
 }
 
 fn validate_desktop_name(name: &str) -> Result<(), String> {
@@ -1368,9 +1402,10 @@ fn run(config: BootstrapConfig) -> Result<i32, String> {
         }
         append_desktop_telemetry("DesktopSwitched", session.telemetry());
     }
-    let started_at = Instant::now();
+    let mut started_at = Instant::now();
     let mut last_healthy_sequence = None;
     let mut monitor_error = None;
+    let mut restarts_used: u32 = 0;
 
     let result = loop {
         match read_json_file::<WidgetStateRecord>(&control_paths.widget_state_path) {
@@ -1452,7 +1487,59 @@ fn run(config: BootstrapConfig) -> Result<i32, String> {
         }
 
         match child.try_wait() {
-            Ok(Some(status)) => break status,
+            Ok(Some(status)) => {
+                // The Electron child exited. If auto-restart is enabled, the exit
+                // was ABNORMAL (non-zero), and the budget allows, relaunch it onto
+                // the same isolated desktop and keep supervising; otherwise fall
+                // through to recovery. Default budget is 0, preserving the
+                // historical exit-on-death behaviour. A clean exit (0) — how a
+                // completed exam quits — is never restarted.
+                if should_restart_child(status, restarts_used, config.electron_restart_max) {
+                    // Drop the stale heartbeat so the relaunched child is not
+                    // judged against the previous PID (which would be Invalid).
+                    let _ = fs::remove_file(&path);
+                    match launch_electron(
+                        &config,
+                        &path,
+                        &token,
+                        &challenge,
+                        desktop_path.as_deref(),
+                        &control_paths,
+                    ) {
+                        Ok(new_child) => match job.assign(&new_child) {
+                            Ok(()) => {
+                                restarts_used += 1;
+                                eprintln!(
+                                    "[bootstrapper] Electron exited abnormally ({status}); relaunched ({restarts_used}/{}).",
+                                    config.electron_restart_max
+                                );
+                                child = new_child;
+                                started_at = Instant::now();
+                                last_healthy_sequence = None;
+                                // Back off so a startup-crash loop cannot burn the
+                                // whole budget in a tight spin.
+                                thread::sleep(Duration::from_millis(RESTART_BACKOFF_MS));
+                                continue;
+                            }
+                            Err(error) => {
+                                let mut new_child = new_child;
+                                terminate_child_after_launch_failure(&mut new_child);
+                                eprintln!(
+                                    "[bootstrapper] Failed to supervise relaunched Electron: {error}"
+                                );
+                                let _ = job.terminate();
+                                break 222;
+                            }
+                        },
+                        Err(error) => {
+                            eprintln!("[bootstrapper] Failed to relaunch Electron: {error}");
+                            let _ = job.terminate();
+                            break 222;
+                        }
+                    }
+                }
+                break status;
+            }
             Ok(None) => {}
             Err(error) => {
                 monitor_error = Some(error);
@@ -1537,11 +1624,66 @@ mod tests {
     use super::{
         bootstrapper_control_paths, build_widget_interaction_record,
         build_command_line, evaluate_heartbeat, heartbeat_challenge_payload, hmac_sha256_hex,
-        validate_desktop_name, BootstrapConfig, DesktopRestorePlan, DesktopSnapshot,
-        HeartbeatHealth, HeartbeatRecord,
+        should_restart_child, validate_desktop_name, BootstrapConfig, DesktopRestorePlan,
+        DesktopSnapshot, HeartbeatHealth, HeartbeatRecord,
         NativeWidgetEventKind, WidgetStateRecord, DEFAULT_HEARTBEAT_TIMEOUT_MS,
     };
     use std::path::Path;
+
+    #[test]
+    fn auto_restart_is_disabled_by_default_and_only_on_abnormal_exit() {
+        // Default budget 0 → never restart (historical exit-on-death behaviour).
+        assert!(!should_restart_child(1, 0, 0));
+        // A clean exit (0) — a normally-completed exam — is never restarted.
+        assert!(!should_restart_child(0, 0, 3));
+        // An abnormal exit restarts until the budget is exhausted.
+        assert!(should_restart_child(1, 0, 3));
+        assert!(should_restart_child(15, 2, 3));
+        assert!(!should_restart_child(1, 3, 3));
+    }
+
+    #[test]
+    fn restart_max_defaults_to_zero_and_parses_when_provided() {
+        let default_config = BootstrapConfig::parse(
+            ["b.exe", "--electron", "e.exe", "--rust-core", "c.exe"]
+                .into_iter()
+                .map(str::to_string),
+        )
+        .unwrap();
+        assert_eq!(default_config.electron_restart_max, 0);
+
+        let configured = BootstrapConfig::parse(
+            [
+                "b.exe",
+                "--electron",
+                "e.exe",
+                "--rust-core",
+                "c.exe",
+                "--electron-restart-max",
+                "3",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        )
+        .unwrap();
+        assert_eq!(configured.electron_restart_max, 3);
+
+        // Out-of-range budgets are rejected.
+        assert!(BootstrapConfig::parse(
+            [
+                "b.exe",
+                "--electron",
+                "e.exe",
+                "--rust-core",
+                "c.exe",
+                "--electron-restart-max",
+                "99",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        )
+        .is_err());
+    }
 
     #[test]
     fn parses_paths_timeouts_and_child_arguments_without_a_shell() {

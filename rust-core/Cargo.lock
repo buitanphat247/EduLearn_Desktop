@@ -304,6 +304,7 @@ dependencies = [
  "sysinfo",
  "windows 0.58.0",
  "winreg",
+ "zeroize",
 ]
 
 [[package]]

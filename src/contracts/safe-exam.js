@@ -4,6 +4,8 @@ const DESKTOP_CORE_CHANNELS = {
   GET_RUNTIME_SNAPSHOT: "desktop-core:get-runtime-snapshot",
   REQUEST: "desktop-core:request",
   RUNTIME_CHANGED: "desktop-core:runtime-changed",
+  ENTER_EXAM_DESKTOP: "desktop-core:enter-exam-desktop",
+  EXAM_SHELL_EXIT: "desktop-core:exam-shell-exit",
 };
 
 const RUNTIME_CHANGED_EVENT = "edulearn:runtime-changed";
@@ -82,6 +84,10 @@ const SAFE_EXAM_COMMANDS = new Set([
   "exit_exam_session",
   "force_restore_desktop",
   "request_emergency_restore",
+  "create_exam_desktop",
+  "switch_default_desktop",
+  "activate_input_lockdown",
+  "deactivate_input_lockdown",
   "sync_display_topology",
   "run_runtime_monitor_tick",
   "get_protection_status",
@@ -94,6 +100,9 @@ const SAFE_EXAM_COMMANDS = new Set([
   "get_exam_device_identity",
   "sign_exam_challenge",
   "sign_audit_upload",
+  "sign_app_request",
+  "check_debugger",
+  "scan_process_heuristics",
   "compatibility_check",
   "verify_config",
   "load_policy",

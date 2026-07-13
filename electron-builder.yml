@@ -1,0 +1,64 @@
+# C2: EduLearn secure-exam desktop packaging (electron-builder).
+#
+# Produces a code-signed, ASAR-packed installer so the shell can no longer run
+# from editable source. Combined with:
+#   - scripts/generate-integrity-manifest.js  (runs in afterPack, below)
+#   - src/app-integrity.js + main.js startup gate
+# tampering with any protected file is detected and the launch is refused.
+#
+# Signing is driven by env (CSC_LINK = path/base64 of the .pfx, CSC_KEY_PASSWORD
+# = its password). Without them electron-builder produces an UNSIGNED build —
+# fine for local packaging, but ship signed for production.
+
+appId: org.edulearn.secure-exam
+productName: EduLearn Secure Exam
+copyright: EduLearn
+
+directories:
+  output: dist
+  buildResources: build
+
+# Pack the app into an ASAR archive and enable integrity checking so Electron
+# refuses to load a modified archive (defense-in-depth over our hash manifest).
+asar: true
+asarUnpack:
+  # The native Rust core must stay on disk (a real .exe, not inside the asar).
+  - "rust-core/target/release/rust-core.exe"
+
+files:
+  - "src/**/*"
+  - "package.json"
+  - "integrity-manifest.json"
+  - "integrity-manifest.sig"
+  - "!**/*.map"
+  - "!test/**"
+  - "!native-tests/**"
+
+extraResources:
+  - from: "rust-core/target/release/rust-core.exe"
+    to: "rust-core/rust-core.exe"
+
+# Generate (and, when a key is provided, sign) the integrity manifest right
+# before the files are packed into the ASAR.
+afterPack: "build/after-pack-integrity.js"
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  # F-001: Authenticode signing. electron-builder signs when CSC_LINK +
+  # CSC_KEY_PASSWORD are present in the env (CI secrets / R12 certificate);
+  # without them it produces an UNSIGNED build for local dev. The PRODUCTION
+  # gate is NOT enforced here (a build-breaking forceCodeSigning would block
+  # local dev) — it is enforced downstream by scripts/verify-signatures.ps1,
+  # which the Release workflow runs with -RequireSigned and which fails the
+  # release if any shipped binary is unsigned or un-timestamped.
+  signingHashAlgorithms: ["sha256"]
+  rfc3161TimeStampServer: "http://timestamp.digicert.com"
+
+nsis:
+  oneClick: false
+  perMachine: true
+  allowElevation: true
+  allowToChangeInstallationDirectory: true

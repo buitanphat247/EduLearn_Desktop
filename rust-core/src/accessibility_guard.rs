@@ -272,6 +272,31 @@ mod windows_impl {
         update_setting(SPI_SETTOGGLEKEYS, &mut toggle_keys)
     }
 
+    /// Accessibility tools that live outside the SystemParametersInfo hotkey
+    /// surface — Magnifier, Narrator and the On-Screen Keyboard — and can each be
+    /// used to read/inject content during an exam.
+    fn is_blocked_accessibility_tool(name: &str) -> bool {
+        matches!(
+            name.trim().to_ascii_lowercase().as_str(),
+            "magnify.exe" | "narrator.exe" | "osk.exe"
+        )
+    }
+
+    /// Terminate any running Magnifier / Narrator / On-Screen Keyboard process.
+    /// Returns how many were signalled. Best-effort: processes that cannot be
+    /// killed (e.g. protected) are simply skipped.
+    pub fn terminate_blocked_accessibility_tools() -> usize {
+        use sysinfo::{ProcessRefreshKind, System};
+        let mut system = System::new();
+        system.refresh_processes_specifics(ProcessRefreshKind::new());
+        system
+            .processes()
+            .values()
+            .filter(|process| is_blocked_accessibility_tool(process.name()))
+            .filter(|process| process.kill())
+            .count()
+    }
+
     pub fn activate_accessibility_guard() -> AccessibilityGuardMutationResult {
         let state = accessibility_guard_state();
         let mut guard = match state.lock() {
@@ -349,10 +374,13 @@ mod windows_impl {
         match apply_snapshot(protected) {
             Ok(()) => {
                 *guard = Some(snapshot);
+                let terminated = terminate_blocked_accessibility_tools();
                 AccessibilityGuardMutationResult {
                     applied: true,
                     active: true,
-                    detail: "Sticky Keys, Filter Keys and Toggle Keys activation hotkeys are disabled for the protected session.".to_string(),
+                    detail: format!(
+                        "Sticky/Filter/Toggle Keys activation hotkeys are disabled and {terminated} accessibility tool(s) (Magnifier/Narrator/OSK) were terminated for the protected session."
+                    ),
                 }
             }
             Err(error) => {
@@ -508,13 +536,23 @@ mod windows_impl {
     #[cfg(test)]
     mod tests {
         use super::{
-            disable_accessibility_hotkeys, AccessibilityBackup,
+            disable_accessibility_hotkeys, is_blocked_accessibility_tool,
+            AccessibilityBackup,
             persist_backup_at, remove_backup_at, same_process_identity,
             AccessibilitySnapshot,
             FKF_CONFIRMHOTKEY, FKF_HOTKEYACTIVE, FILTERKEYS,
             SKF_CONFIRMHOTKEY, SKF_HOTKEYACTIVE, STICKYKEYS,
             STICKYKEYS_FLAGS, TKF_CONFIRMHOTKEY, TKF_HOTKEYACTIVE, TOGGLEKEYS,
         };
+
+        #[test]
+        fn blocks_magnifier_narrator_and_osk_by_name() {
+            assert!(is_blocked_accessibility_tool("magnify.exe"));
+            assert!(is_blocked_accessibility_tool("Narrator.EXE"));
+            assert!(is_blocked_accessibility_tool("osk.exe"));
+            assert!(!is_blocked_accessibility_tool("chrome.exe"));
+            assert!(!is_blocked_accessibility_tool("notepad.exe"));
+        }
 
         #[test]
         fn disables_only_accessibility_activation_hotkeys() {
@@ -651,9 +689,13 @@ mod windows_impl {
                 .to_string(),
         }
     }
+
+    pub fn terminate_blocked_accessibility_tools() -> usize {
+        0
+    }
 }
 
 pub use windows_impl::{
     activate_accessibility_guard, deactivate_accessibility_guard,
-    restore_accessibility_after_unclean_shutdown,
+    restore_accessibility_after_unclean_shutdown, terminate_blocked_accessibility_tools,
 };

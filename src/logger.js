@@ -2,6 +2,57 @@ const fs = require('fs');
 const path = require('path');
 const { app } = require('electron');
 
+// L2: redact secrets before they hit the JSONL sink. The Rust core already
+// redacts; the Electron logger did not, so auth tokens (cookies `_at`/`_rt`/
+// `_csrf`), the IPC secret, capability tokens, passwords and clipboard contents
+// could leak into on-disk logs. Keys are matched case-insensitively.
+const REDACTED = '[REDACTED]';
+const SENSITIVE_EXACT_KEYS = new Set(['_at', '_rt', '_u', '_csrf']);
+const SENSITIVE_KEY_PATTERNS = [
+  'password',
+  'passwd',
+  'secret',
+  'token',
+  'cookie',
+  'authorization',
+  'credential',
+  'clipboard',
+  'apikey',
+  'api_key',
+  'bearer',
+];
+
+function isSensitiveKey(key) {
+  if (typeof key !== 'string') return false;
+  const lower = key.toLowerCase();
+  if (SENSITIVE_EXACT_KEYS.has(lower)) return true;
+  return SENSITIVE_KEY_PATTERNS.some((pattern) => lower.includes(pattern));
+}
+
+// Deep-clone `value` with any sensitive-keyed field replaced by [REDACTED].
+// Depth- and cycle-guarded so a pathological payload can never hang the logger.
+function redactSensitive(value, depth = 0, seen = new WeakSet()) {
+  if (depth > 8 || value === null || typeof value !== 'object') {
+    return value;
+  }
+  if (seen.has(value)) {
+    return '[Circular]';
+  }
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    return value.map((item) => redactSensitive(item, depth + 1, seen));
+  }
+
+  const out = {};
+  for (const [key, val] of Object.entries(value)) {
+    out[key] = isSensitiveKey(key)
+      ? REDACTED
+      : redactSensitive(val, depth + 1, seen);
+  }
+  return out;
+}
+
 function resolveLoggerBaseDir(appLike = app) {
   try {
     if (appLike && !appLike.isDestroyed?.()) {
@@ -96,7 +147,7 @@ class Logger {
       event,
       sessionId: this.sessionId || 'N/A',
       processState: this.processState || 'N/A',
-      payload
+      payload: redactSensitive(payload)
     };
 
     const jsonl = JSON.stringify(logEntry) + '\n';
@@ -140,4 +191,6 @@ const globalLogger = new Logger();
 module.exports = {
   logger: globalLogger,
   resolveLoggerBaseDir,
+  redactSensitive,
+  isSensitiveKey,
 };

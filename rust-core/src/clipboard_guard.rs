@@ -4,6 +4,21 @@ pub struct ClipboardGuardMutationResult {
     pub detail: String,
 }
 
+/// Decide whether the clipboard should be cleared given its owning process.
+///
+/// Content produced by the exam app itself (allowed PIDs — this process and its
+/// Electron parent) is preserved so legitimate in-exam copy still works. Content
+/// from any other process, or an unknown owner, is cleared. This replaces the
+/// previous "blind clear on every update" behaviour that also destroyed the
+/// exam's own clipboard content.
+#[cfg(target_os = "windows")]
+fn should_clear_for_owner(owner_pid: Option<u32>, allowed_pids: &[u32]) -> bool {
+    match owner_pid {
+        Some(pid) => !allowed_pids.contains(&pid),
+        None => true,
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn clear_clipboard_with<Open, Empty, Close>(
     mut open_clipboard: Open,
@@ -105,16 +120,16 @@ mod clipboard_monitor {
         HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
     };
     use windows::Win32::System::DataExchange::{
-        AddClipboardFormatListener, CountClipboardFormats,
+        AddClipboardFormatListener, CountClipboardFormats, GetClipboardOwner,
         RemoveClipboardFormatListener,
     };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows::Win32::System::Threading::GetCurrentThreadId;
+    use windows::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-        GetMessageW, HWND_MESSAGE, IsWindow, MSG, PostThreadMessageW, RegisterClassW,
-        TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLIPBOARDUPDATE,
-        WM_QUIT, WNDCLASSW,
+        GetMessageW, GetWindowThreadProcessId, HWND_MESSAGE, IsWindow, MSG,
+        PostThreadMessageW, RegisterClassW, TranslateMessage, WINDOW_EX_STYLE,
+        WINDOW_STYLE, WM_CLIPBOARDUPDATE, WM_QUIT, WNDCLASSW,
     };
 
     struct ClipboardMonitorHandle {
@@ -136,6 +151,33 @@ mod clipboard_monitor {
         CLIPBOARD_MONITOR_STATE.get_or_init(|| Mutex::new(None))
     }
 
+    /// PIDs whose clipboard content is considered legitimate: this guard process
+    /// and its Electron parent (passed via env at spawn time).
+    fn allowed_clipboard_owner_pids() -> Vec<u32> {
+        let mut pids = vec![unsafe { GetCurrentProcessId() }];
+        if let Ok(parent) = std::env::var("EDULEARN_CORE_IPC_PARENT_PID") {
+            if let Ok(pid) = parent.trim().parse::<u32>() {
+                pids.push(pid);
+            }
+        }
+        pids
+    }
+
+    /// Resolve the process that currently owns the clipboard, if any.
+    fn clipboard_owner_pid() -> Option<u32> {
+        let owner = unsafe { GetClipboardOwner() }.ok()?;
+        if owner.0.is_null() {
+            return None;
+        }
+        let mut pid = 0u32;
+        unsafe { GetWindowThreadProcessId(owner, Some(&mut pid)) };
+        if pid == 0 {
+            None
+        } else {
+            Some(pid)
+        }
+    }
+
     unsafe extern "system" fn clipboard_window_proc(
         window_handle: HWND,
         message: u32,
@@ -146,7 +188,15 @@ mod clipboard_monitor {
             && unsafe { CountClipboardFormats() } > 0
             && !CLIPBOARD_CLEAR_IN_PROGRESS.swap(true, Ordering::SeqCst)
         {
-            let _ = clear_clipboard_retrying();
+            // Only clear content that did not originate from the exam app itself,
+            // so in-exam copy keeps working and we stop churning the user's
+            // clipboard on every update.
+            if super::should_clear_for_owner(
+                clipboard_owner_pid(),
+                &allowed_clipboard_owner_pids(),
+            ) {
+                let _ = clear_clipboard_retrying();
+            }
             CLIPBOARD_CLEAR_IN_PROGRESS.store(false, Ordering::SeqCst);
             return LRESULT(0);
         }
@@ -376,8 +426,20 @@ pub fn clear_clipboard() -> ClipboardGuardMutationResult {
 
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
-    use super::{clear_clipboard_with, clear_clipboard_with_retry};
+    use super::{clear_clipboard_with, clear_clipboard_with_retry, should_clear_for_owner};
     use std::cell::Cell;
+
+    #[test]
+    fn preserves_exam_owned_clipboard_but_clears_foreign_content() {
+        let allowed = [1000u32, 2000u32];
+        // Exam app (allowed PID) copied something: keep it.
+        assert!(!should_clear_for_owner(Some(1000), &allowed));
+        assert!(!should_clear_for_owner(Some(2000), &allowed));
+        // Another app copied something: clear it.
+        assert!(should_clear_for_owner(Some(4321), &allowed));
+        // Unknown owner: clear to be safe.
+        assert!(should_clear_for_owner(None, &allowed));
+    }
 
     #[test]
     fn clears_and_closes_an_open_clipboard() {

@@ -6,6 +6,28 @@ const {
   createDesktopRuntimeSnapshot,
 } = require("./contracts/safe-exam");
 const { TRACE_CHANNEL } = require("./exam-guard-trace");
+const {
+  readCapabilityTokenFromArgv,
+  isExamShellFromArgv,
+} = require("./capability-token");
+
+// C3: this launch's capability token, injected by main via `additionalArguments`
+// (visible here in process.argv, but not to the untrusted page). It is attached
+// as the leading argument of every privileged desktop-core invoke so main can
+// verify the call originated from this bundled preload.
+const CAPABILITY_TOKEN = readCapabilityTokenFromArgv(process.argv);
+
+// Exam-shell identity: env flag OR the robust argv marker (defense-in-depth), so
+// a genuine isolated shell is never mis-detected as the trapping in-window mode.
+const IS_ISOLATED_EXAM_SHELL =
+  process.env.EDULEARN_EXAM_SHELL === "1" || isExamShellFromArgv(process.argv);
+
+// Invoke a main-side desktop-core channel with the capability token prepended.
+function invokeCore(channel, payload) {
+  return payload === undefined
+    ? ipcRenderer.invoke(channel, CAPABILITY_TOKEN)
+    : ipcRenderer.invoke(channel, CAPABILITY_TOKEN, payload);
+}
 
 let runtimeSnapshot = createDesktopRuntimeSnapshot({
   platform: process.platform,
@@ -336,28 +358,26 @@ contextBridge.exposeInMainWorld("desktopRuntime", {
 });
 
 contextBridge.exposeInMainWorld("desktopCore", {
-  getRuntimeSnapshot: () => ipcRenderer.invoke(DESKTOP_CORE_CHANNELS.GET_RUNTIME_SNAPSHOT),
-  request: (command) => ipcRenderer.invoke(DESKTOP_CORE_CHANNELS.REQUEST, buildCommandRequest(command)),
+  getRuntimeSnapshot: () => invokeCore(DESKTOP_CORE_CHANNELS.GET_RUNTIME_SNAPSHOT),
+  request: (command) => invokeCore(DESKTOP_CORE_CHANNELS.REQUEST, buildCommandRequest(command)),
   startExamSession: (payload) =>
-    ipcRenderer
-      .invoke(
-        DESKTOP_CORE_CHANNELS.REQUEST,
-        buildCommandRequest({
-          cmd: "start_exam_session",
-          payload,
-        }),
-      )
-      .then(async (response) => {
-        if (response?.ok) {
-          const governedSnapshot = await ipcRenderer.invoke(
-            DESKTOP_CORE_CHANNELS.GET_RUNTIME_SNAPSHOT,
-          );
-          applyRuntimeSnapshot(governedSnapshot);
-        }
-        return response;
+    invokeCore(
+      DESKTOP_CORE_CHANNELS.REQUEST,
+      buildCommandRequest({
+        cmd: "start_exam_session",
+        payload,
       }),
+    ).then(async (response) => {
+      if (response?.ok) {
+        const governedSnapshot = await invokeCore(
+          DESKTOP_CORE_CHANNELS.GET_RUNTIME_SNAPSHOT,
+        );
+        applyRuntimeSnapshot(governedSnapshot);
+      }
+      return response;
+    }),
   exitExamSession: (payload) =>
-    ipcRenderer.invoke(
+    invokeCore(
       DESKTOP_CORE_CHANNELS.REQUEST,
       buildCommandRequest({
         cmd: "exit_exam_session",
@@ -365,21 +385,21 @@ contextBridge.exposeInMainWorld("desktopCore", {
       }),
     ),
   forceRestoreDesktop: () =>
-    ipcRenderer.invoke(
+    invokeCore(
       DESKTOP_CORE_CHANNELS.REQUEST,
       buildCommandRequest({
         cmd: "force_restore_desktop",
       }),
     ),
   getProtectionStatus: () =>
-    ipcRenderer.invoke(
+    invokeCore(
       DESKTOP_CORE_CHANNELS.REQUEST,
       buildCommandRequest({
         cmd: "get_protection_status",
       }),
     ),
   loadExamPolicy: (payload) =>
-    ipcRenderer.invoke(
+    invokeCore(
       DESKTOP_CORE_CHANNELS.REQUEST,
       buildCommandRequest({
         cmd: "load_policy",
@@ -387,12 +407,34 @@ contextBridge.exposeInMainWorld("desktopCore", {
       }),
     ),
   getPolicyStatus: () =>
-    ipcRenderer.invoke(
+    invokeCore(
       DESKTOP_CORE_CHANNELS.REQUEST,
       buildCommandRequest({
         cmd: "get_policy_status",
       }),
     ),
+});
+
+contextBridge.exposeInMainWorld("desktopExam", {
+  // True when this Electron process is the isolated exam-shell (spawned onto a
+  // dedicated Windows desktop), so the UI can render the exam room + exit flow.
+  isExamShell: IS_ISOLATED_EXAM_SHELL,
+  sessionId: process.env.EDULEARN_EXAM_SHELL_SESSION_ID || null,
+  examCode: process.env.EDULEARN_EXAM_SHELL_EXAM_CODE || null,
+  // Lobby: create the isolated desktop + launch the exam-shell on it.
+  enterExamDesktop: (info) =>
+    invokeCore(DESKTOP_CORE_CHANNELS.ENTER_EXAM_DESKTOP, {
+      roomUrl: info?.roomUrl,
+      sessionId: info?.sessionId,
+      examCode: info?.examCode,
+    }),
+  // Exam-shell: switch back to Default + quit shell. The password is re-verified
+  // in the main process (not trusted from the renderer), so it must be passed.
+  confirmExit: (info) =>
+    invokeCore(DESKTOP_CORE_CHANNELS.EXAM_SHELL_EXIT, {
+      password: info?.password,
+      sessionId: info?.sessionId,
+    }),
 });
 
 contextBridge.exposeInMainWorld("desktopOAuth", {
@@ -592,8 +634,7 @@ window.addEventListener("DOMContentLoaded", () => {
     applyRuntimeSnapshot(snapshot);
     applyMediaLock("runtime_changed");
   });
-  ipcRenderer
-    .invoke(DESKTOP_CORE_CHANNELS.GET_RUNTIME_SNAPSHOT)
+  invokeCore(DESKTOP_CORE_CHANNELS.GET_RUNTIME_SNAPSHOT)
     .then((snapshot) => {
       applyRuntimeSnapshot(snapshot);
       applyMediaLock("snapshot_hydrated");
@@ -623,6 +664,35 @@ function isWinKey(event) {
   return event.key === "Meta" || event.key === "OS" || event.code === "MetaLeft" || event.code === "MetaRight";
 }
 
+function isPrintScreenKey(event) {
+  return event.key === "PrintScreen" || event.code === "PrintScreen";
+}
+
+function isContextMenuKey(event) {
+  return event.key === "ContextMenu" || event.code === "ContextMenu";
+}
+
+// The isolated exam-shell must lock the keyboard the whole time it is up (there
+// is no kiosk EXAM_RUNNING_CONFIRMED handshake), so the input filter is always
+// active in that process — not gated on session state. Uses the single canonical
+// `IS_ISOLATED_EXAM_SHELL` (env OR argv) defined at the top of this preload.
+
+// True when the key event targets an editable field (password prompt, essay
+// answer, …). Secure browsers block shortcuts, not text entry — so typing here
+// must be allowed even during a protected exam session.
+function isEditableTarget(event) {
+  const target = event.target;
+  if (!target || typeof target !== "object") {
+    return false;
+  }
+  const tagName = target.tagName;
+  return (
+    tagName === "INPUT" ||
+    tagName === "TEXTAREA" ||
+    target.isContentEditable === true
+  );
+}
+
 function blockInputEvent(event, reason) {
   event.preventDefault();
   event.stopImmediatePropagation();
@@ -643,7 +713,8 @@ function blockInputEvent(event, reason) {
 
 const filterInputEvent = (event) => {
   const state = runtimeSnapshot.sessionState;
-  const isActiveSession = ACTIVE_INPUT_LOCK_STATES.has(state);
+  const isActiveSession =
+    IS_ISOLATED_EXAM_SHELL || ACTIVE_INPUT_LOCK_STATES.has(state);
 
   // ── V10.9X: GLOBAL PRIORITY OVERRIDE ──
   // If exitInProgress, block ALL input (exit UI only)
@@ -669,6 +740,17 @@ const filterInputEvent = (event) => {
     pressedKeys.add(keyEventId(event));
   }
 
+  // Always suppress OS/global hotkeys during an active/protected session:
+  // Windows key, PrintScreen and the Context-menu key. (Note: JS can only
+  // best-effort these — true OS-level suppression needs the native hook.)
+  if (isWinKey(event) || isPrintScreenKey(event) || isContextMenuKey(event)) {
+    blockInputEvent(event, "global_hotkey_blocked");
+    if (event.type === "keyup") {
+      pressedKeys.delete(keyEventId(event));
+    }
+    return;
+  }
+
   // ── V10.9X: ENTERING_KIOSK + transition states = FULL INPUT BLOCK ──
   // These are transition-only states. No UI access, no input allowed.
   if (FULL_INPUT_BLOCK_STATES.has(state)) {
@@ -679,12 +761,30 @@ const filterInputEvent = (event) => {
     return;
   }
 
-  // EXAM_RUNNING_CONFIRMED is the only state that permits single-key input.
-  // This is the master exam content state. Only single-key input is allowed.
-  if (SINGLE_KEY_ALLOWED_STATES.has(state)) {
-    // Block Win key always
-    if (isWinKey(event)) {
-      blockInputEvent(event, "win_key_blocked");
+  // EXAM_RUNNING_CONFIRMED (kiosk) and the isolated exam-shell permit typing:
+  // text entry is allowed inside fields, everything else is shortcut-locked.
+  if (SINGLE_KEY_ALLOWED_STATES.has(state) || IS_ISOLATED_EXAM_SHELL) {
+    // Typing into a form field (password prompt, essay answer, …): allow normal
+    // text entry — printable chars, Shift for capitals/symbols, and editing keys
+    // (Backspace/Delete/Arrows/Home/End). Only shortcut modifiers (Ctrl/Alt/Meta)
+    // and function keys stay blocked. This fixes fast typing being mis-detected
+    // as a multi-key "chord" and Shift being blocked, which prevented typing a
+    // full password / answer.
+    if (isEditableTarget(event)) {
+      if (event.ctrlKey || event.altKey || event.metaKey) {
+        blockInputEvent(event, "modifier_key_combination_in_field");
+        if (event.type === "keyup") {
+          pressedKeys.delete(keyEventId(event));
+        }
+        return;
+      }
+      if (isFunctionKey(event)) {
+        blockInputEvent(event, "function_key_blocked");
+        if (event.type === "keyup") {
+          pressedKeys.delete(keyEventId(event));
+        }
+        return;
+      }
       if (event.type === "keyup") {
         pressedKeys.delete(keyEventId(event));
       }

@@ -1,4 +1,5 @@
 mod accessibility_guard;
+mod anti_debug;
 mod audit_log;
 mod bootstrapper_control;
 mod collectors;
@@ -12,6 +13,7 @@ mod etw_producer;
 mod exam_key;
 mod display_guard;
 mod dpi_awareness;
+mod ffi_guards;
 mod focus_guard;
 mod guard_liveness;
 mod input_guard;
@@ -24,6 +26,7 @@ mod policy;
 mod policy_loader;
 mod policy_model;
 mod policy_signature;
+mod process_heuristics;
 mod process_remediation;
 mod process_watcher;
 mod process_policy;
@@ -40,7 +43,7 @@ mod taskbar_guard;
 
 use accessibility_guard::{
     activate_accessibility_guard, deactivate_accessibility_guard,
-    restore_accessibility_after_unclean_shutdown,
+    restore_accessibility_after_unclean_shutdown, terminate_blocked_accessibility_tools,
 };
 use audit_log::{
     ack_audit_upload_batch, append_audit_event, audit_status, drain_audit_upload_batch,
@@ -52,8 +55,9 @@ use bootstrapper_control::{
 };
 use collectors::{
     collect_display_info, collect_precheck_snapshot_with_policy,
-    collect_process_categories_from_processes, collect_remote_signals,
-    collect_screen_capture_signals, collect_system_info, collect_vm_signals, ProcessCollector,
+    collect_process_categories_from_processes, collect_remote_environment_signals,
+    collect_remote_session_signals, collect_remote_signals, collect_screen_capture_signals,
+    collect_system_info, collect_vm_signals, ProcessCollector,
 };
 use capture_guard::{
     activate_capture_guard, deactivate_capture_guard, re_apply_capture_guard,
@@ -63,7 +67,9 @@ use clipboard_guard::{
     activate_clipboard_guard, deactivate_clipboard_guard,
 };
 use desktop_state::capture_desktop_state;
-use desktop_isolation::restore_default_input_desktop;
+use desktop_isolation::{
+    launch_isolated_exam_desktop, restore_default_input_desktop, ExamDesktopLaunchSpec,
+};
 use emergency_widget::{
     audit_payload as emergency_audit_payload, EmergencyRestoreRequestPayload,
     EmergencyRestoreValidationContext, EmergencyRestoreWidgetController, EVENT_RESTORE_ACCEPTED,
@@ -76,8 +82,8 @@ use display_guard::{activate_native_overlays, deactivate_native_overlays, sync_n
 use dpi_awareness::activate_per_monitor_v2_awareness;
 use evaluation::{build_precheck_report_with_policy, build_preflight_result_with_policy};
 use exam_key::{
-    build_elevated_termination_request, get_exam_device_identity, sign_audit_upload,
-    sign_exam_challenge, verify_exam_receipt, verify_service_authorization,
+    build_elevated_termination_request, get_exam_device_identity, sign_app_request,
+    sign_audit_upload, sign_exam_challenge, verify_exam_receipt, verify_service_authorization,
     AuditUploadSigningPayload, ExamChallengePayload, SignedExamReceipt,
 };
 use focus_guard::{activate_focus_guard, deactivate_focus_guard};
@@ -103,7 +109,8 @@ use policy_signature::TrustedPolicyKeys;
 use service_client::request_elevated_termination;
 use runtime_monitor::build_runtime_monitor_tick_result;
 use runtime_events::{
-    metadata as event_metadata, RuntimeEventBus, EVENT_CAPTURE_DETECTED, EVENT_DESKTOP_CHANGED,
+    metadata as event_metadata, newly_active_signals, RuntimeEventBus, EVENT_ANTI_DEBUG_DETECTED,
+    EVENT_CAPTURE_DETECTED, EVENT_DESKTOP_CHANGED, EVENT_PROCESS_HEURISTIC,
     EVENT_POLICY_RELOADED, EVENT_PROCESS_CREATED, EVENT_PROCESS_EXITED, EVENT_PRODUCER_HEARTBEAT,
     EVENT_PRODUCER_DEGRADED, EVENT_RECOVERY_COMPLETED, EVENT_RECOVERY_STARTED,
     EVENT_RUNTIME_STATE_CHANGED,
@@ -122,8 +129,8 @@ use session_guard::{
     SESSION_STATE_INIT, SESSION_STATE_PREFLIGHT_READY,
     SESSION_STATE_STARTING_EXAM_SESSION,
 };
-use taskbar_guard::{hide_taskbar, show_taskbar};
-use std::collections::BTreeMap;
+use taskbar_guard::{hide_taskbar, reassert_taskbar_hidden, show_taskbar};
+use std::collections::{BTreeMap, HashSet};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -151,6 +158,11 @@ struct CoreRuntimeState {
     emergency_widget: EmergencyRestoreWidgetController,
     runtime_scheduler: RuntimeMonitorScheduler,
     cached_vm_signals: Vec<DetectionSignal>,
+    cached_remote_env_signals: Vec<DetectionSignal>,
+    /// P47-04: signal ids surfaced as runtime events on the PREVIOUS tick, so the
+    /// proactive anti-debug / process-heuristic detections push an event only when
+    /// a signal first appears (edge-triggered) instead of every tick.
+    emitted_detection_ids: HashSet<String>,
     process_collector: ProcessCollector,
     loaded_policy: LoadedExamPolicy,
     trusted_policy_keys: TrustedPolicyKeys,
@@ -203,6 +215,23 @@ struct AuditFailurePayload {
     reason: String,
     #[serde(default)]
     failed_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateExamDesktopPayload {
+    desktop_name: String,
+    executable: String,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    env: std::collections::HashMap<String, String>,
+    #[serde(default = "default_true")]
+    switch_to_exam: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Serialize)]
@@ -661,18 +690,34 @@ fn terminate_with_service_fallback(
     policy: Option<&policy_signature::SignedExamPolicy>,
     receipt: Option<&SignedExamReceipt>,
 ) -> Result<(), String> {
-    match terminate_process_user_mode(pid) {
-        Ok(()) => Ok(()),
-        Err(user_error) => {
-            let (Some(policy), Some(receipt)) = (policy, receipt) else {
-                return Err(user_error);
-            };
-            let request = build_elevated_termination_request(policy, receipt, pid, now_ms())
-                .map_err(|error| format!("{user_error}; service request rejected: {error}"))?;
-            request_elevated_termination(&request)
-                .map(|_| ())
-                .map_err(|error| format!("{user_error}; elevated remediation failed: {error}"))
+    // PREFER the elevated Exam Guard service when a signed authorization is
+    // available. Running as SYSTEM it terminates the process AND stops+disables
+    // any Windows service that owns it — so service-backed remote tools (AnyDesk,
+    // TeamViewer, …) cannot immediately respawn. A plain user-mode
+    // `TerminateProcess` kills the process but the tool's own Windows service
+    // relaunches it before the preflight rescan, which is exactly why entry kept
+    // getting blocked by "AnyDesk.exe" that would not stay dead.
+    //
+    // Fall back to a user-mode kill only when no authorization exists (service
+    // not deployed) or the service is unreachable, so behaviour degrades safely.
+    if let (Some(policy), Some(receipt)) = (policy, receipt) {
+        match build_elevated_termination_request(policy, receipt, pid, now_ms()) {
+            Ok(request) => match request_elevated_termination(&request) {
+                Ok(_) => Ok(()),
+                Err(service_error) => terminate_process_user_mode(pid).map_err(|user_error| {
+                    format!(
+                        "elevated remediation failed: {service_error}; user-mode fallback failed: {user_error}"
+                    )
+                }),
+            },
+            Err(build_error) => terminate_process_user_mode(pid).map_err(|user_error| {
+                format!(
+                    "elevated request rejected: {build_error}; user-mode fallback failed: {user_error}"
+                )
+            }),
         }
+    } else {
+        terminate_process_user_mode(pid)
     }
 }
 
@@ -1059,6 +1104,8 @@ fn restore_active_protection(state: &mut CoreRuntimeState, reason: Option<String
     state.audited_process_policy.clear();
     state.runtime_scheduler.reset();
     state.cached_vm_signals.clear();
+    state.cached_remote_env_signals.clear();
+    state.emitted_detection_ids.clear();
     state.active_service_authorization = None;
     state.emergency_widget.mark_completed();
     let _ = transition_runtime_state(
@@ -1252,6 +1299,73 @@ fn handle_command(state: &mut CoreRuntimeState, request: &CoreRequest) -> CoreRe
                 Ok(signed) => value_from_serializable(&request.request_id, &signed),
                 Err(error) => error_response(&request.request_id, "AUDIT_FAILURE", error),
             }
+        },
+        "sign_app_request" => {
+            // P1-2: sign a canonical request string with the device key.
+            let canonical = request
+                .payload
+                .get("canonical")
+                .and_then(|value| value.as_str())
+                .map(|value| value.to_string());
+            match canonical {
+                Some(canonical) => match sign_app_request(&canonical) {
+                    Ok(signed) => value_from_serializable(&request.request_id, &signed),
+                    Err(error) => {
+                        error_response(&request.request_id, "DEVICE_KEY_FAILURE", error)
+                    }
+                },
+                None => error_response(
+                    &request.request_id,
+                    "INVALID_REQUEST",
+                    "sign_app_request requires a string 'canonical' field.".to_string(),
+                ),
+            }
+        },
+        "scan_process_heuristics" => {
+            // F-017: report-only heuristic signals for a batch of processes. This
+            // NEVER terminates anything — it only returns advisory signals.
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct ScanPayload {
+                #[serde(default)]
+                processes: Vec<process_heuristics::ProcessHeuristicInput>,
+            }
+            match serde_json::from_value::<ScanPayload>(request.payload.clone()) {
+                Ok(payload) => {
+                    let signals: Vec<_> = payload
+                        .processes
+                        .iter()
+                        .flat_map(process_heuristics::heuristic_signals)
+                        .collect();
+                    value_from_serializable(
+                        &request.request_id,
+                        &json!({
+                            "signals": signals,
+                            "enabled": process_heuristics::heuristics_enabled(),
+                        }),
+                    )
+                },
+                Err(error) => error_response(
+                    &request.request_id,
+                    "INVALID_REQUEST",
+                    format!("Invalid scan_process_heuristics payload: {error}"),
+                ),
+            }
+        },
+        "check_debugger" => {
+            // F-004: multi-technique anti-debug + self-integrity telemetry.
+            let report = anti_debug::anti_debug_report();
+            let present = report.any;
+            let signal = report.signals.first().cloned();
+            value_from_serializable(
+                &request.request_id,
+                &json!({
+                    "debuggerPresent": present,
+                    "signal": signal,
+                    "signals": report.signals,
+                    "selfHash": report.self_hash,
+                }),
+            )
         },
         "load_policy" => {
             if state.active_session_id.is_some() {
@@ -2322,9 +2436,18 @@ fn handle_command(state: &mut CoreRuntimeState, request: &CoreRequest) -> CoreRe
                 let system_info = collect_system_info();
                 state.cached_vm_signals =
                     collect_vm_signals(&system_info, &process_categories);
+                // The remote port-table / mirror-driver enumeration is expensive,
+                // so cache it on the same slow cadence rather than every tick.
+                state.cached_remote_env_signals = collect_remote_environment_signals();
             }
             let vm_signals = state.cached_vm_signals.clone();
-            let remote_signals = collect_remote_signals(&process_categories);
+            // Cheap per-tick remote signals (process + RDP session) combined with
+            // the cached expensive environment signals (ports + mirror drivers).
+            let remote_signals = {
+                let mut signals = collect_remote_session_signals(&process_categories);
+                signals.extend(state.cached_remote_env_signals.iter().cloned());
+                signals
+            };
             let screen_capture_signals = collect_screen_capture_signals(&process_categories);
             for signal in &screen_capture_signals {
                 state.runtime_event_bus.emit(
@@ -2339,11 +2462,52 @@ fn handle_command(state: &mut CoreRuntimeState, request: &CoreRequest) -> CoreRe
                 );
             }
 
+            // P47-04: run anti-debug + report-only process heuristics PROACTIVELY
+            // on every monitor tick — not only when the client polls check_debugger
+            // / scan_process_heuristics — and push each newly-appeared signal into
+            // the runtime-event stream the client already subscribes to. Edge-
+            // triggered (via `newly_active_signals` against `emitted_detection_ids`)
+            // so a persistent signal does not flood the bounded event ring.
+            let mut proactive_detections =
+                process_heuristics::heuristic_signals_for_processes(&process_list);
+            proactive_detections.extend(anti_debug::anti_debug_report().signals);
+            let (fresh_detections, present_detection_ids) =
+                newly_active_signals(&proactive_detections, &state.emitted_detection_ids);
+            for signal in fresh_detections {
+                let (kind, level) = if signal.source == "anti_debug" {
+                    (EVENT_ANTI_DEBUG_DETECTED, "critical")
+                } else {
+                    (EVENT_PROCESS_HEURISTIC, "warn")
+                };
+                state.runtime_event_bus.emit(
+                    kind,
+                    level,
+                    collected_at,
+                    format!("{}: {}", signal.label, signal.detail),
+                    event_metadata(&[
+                        ("signalId", signal.id.clone()),
+                        ("source", signal.source.clone()),
+                        ("severity", signal.severity.clone()),
+                    ]),
+                );
+            }
+            state.emitted_detection_ids = present_detection_ids;
+
             let overlay_result = if state.protection_status.overlay_active || state.protection_status.kiosk_active {
                 Some(sync_native_overlays(&display_info))
             } else {
                 None
             };
+            // Self-heal the taskbar (primary + secondary monitors) if it was
+            // hidden for this session but the shell re-showed it.
+            if state.protection_status.taskbar_hidden {
+                let _ = reassert_taskbar_hidden();
+            }
+            // Re-terminate accessibility tools (Magnifier/Narrator/OSK) that a
+            // candidate may have relaunched during the exam.
+            if state.protection_status.kiosk_active {
+                let _ = terminate_blocked_accessibility_tools();
+            }
             let mouse_guard_result = activate_mouse_guard(&display_info);
             let clipboard_guard_result = activate_clipboard_guard();
             let input_guard_result = activate_input_guard();
@@ -2636,6 +2800,118 @@ fn handle_command(state: &mut CoreRuntimeState, request: &CoreRequest) -> CoreRe
                 }),
             )
         }
+        "create_exam_desktop" => {
+            let payload: CreateExamDesktopPayload =
+                match serde_json::from_value(request.payload.clone()) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        return error_response(
+                            &request.request_id,
+                            "INVALID_REQUEST",
+                            format!("Invalid create_exam_desktop payload: {error}"),
+                        )
+                    }
+                };
+
+            let spec = ExamDesktopLaunchSpec {
+                desktop_name: payload.desktop_name,
+                executable: payload.executable,
+                args: payload.args,
+                env: payload.env,
+                switch_to_exam: payload.switch_to_exam,
+            };
+
+            match launch_isolated_exam_desktop(&spec) {
+                Ok(result) => {
+                    let _ = append_audit_event(
+                        now_ms(),
+                        "DESKTOP_ISOLATION_CREATED",
+                        "info",
+                        &state.session_state,
+                        state.active_session_id.as_deref(),
+                        &state.loaded_policy.digest_sha256,
+                        json!({
+                            "detail": format!(
+                                "Isolated exam desktop {} launched (pid {}).",
+                                result.desktop_name, result.shell_pid
+                            ),
+                            "desktopPath": result.desktop_path,
+                            "desktopName": result.desktop_name,
+                            "shellPid": result.shell_pid,
+                            "switched": result.switched,
+                        }),
+                    );
+                    success_response(
+                        &request.request_id,
+                        json!({
+                            "desktopPath": result.desktop_path,
+                            "desktopName": result.desktop_name,
+                            "shellPid": result.shell_pid,
+                            "switched": result.switched,
+                            "created": result.created,
+                            "isolationMode": "separate-desktop",
+                        }),
+                    )
+                }
+                Err(error) => error_response(
+                    &request.request_id,
+                    "PROTECTION_FAILURE",
+                    format!("Failed to create isolated exam desktop: {error}"),
+                ),
+            }
+        }
+        "switch_default_desktop" => {
+            let restore = restore_default_input_desktop();
+            if restore.applied {
+                success_response(
+                    &request.request_id,
+                    json!({
+                        "applied": true,
+                        "detail": restore.detail,
+                    }),
+                )
+            } else {
+                error_response(
+                    &request.request_id,
+                    "PROTECTION_FAILURE",
+                    restore.detail,
+                )
+            }
+        }
+        // Standalone activation of the native WH_KEYBOARD_LL lockdown for the
+        // isolated exam-shell (which does not run the full kiosk session but
+        // still needs OS-level suppression of Alt+F4, Win, Alt+Tab, PrintScreen,
+        // Ctrl+C/V/X, etc.).
+        "activate_input_lockdown" => {
+            let result = activate_input_guard();
+            if result.applied || result.active {
+                success_response(
+                    &request.request_id,
+                    json!({
+                        "applied": result.applied,
+                        "active": result.active,
+                        "detail": result.detail,
+                    }),
+                )
+            } else {
+                error_response(
+                    &request.request_id,
+                    "PROTECTION_FAILURE",
+                    result.detail,
+                )
+            }
+        }
+        "deactivate_input_lockdown" => {
+            let result = deactivate_input_guard();
+            success_response(
+                &request.request_id,
+                json!({
+                    "applied": result.applied,
+                    "active": result.active,
+                    "detail": result.detail,
+                }),
+            )
+        }
         "compatibility_check"
         | "verify_config"
         | "check_environment"
@@ -2854,6 +3130,8 @@ fn initial_runtime_state() -> CoreRuntimeState {
             DEFAULT_ENVIRONMENT_SCAN_INTERVAL_MS,
         ),
         cached_vm_signals: Vec::new(),
+        cached_remote_env_signals: Vec::new(),
+        emitted_detection_ids: HashSet::new(),
         process_collector: ProcessCollector::new(),
         loaded_policy: LoadedExamPolicy::builtin(),
         trusted_policy_keys: TrustedPolicyKeys::from_environment().unwrap_or_default(),
@@ -2917,10 +3195,10 @@ fn run_named_pipe_command_loop(
         if reader.read_line(&mut line)? == 0 {
             break;
         }
-        if line.len() > 1024 * 1024 {
+        if line.len() > ipc_auth::MAX_RAW_FRAME_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "Authenticated IPC frame exceeded 1 MiB.",
+                "Authenticated IPC frame exceeded the maximum size.",
             ));
         }
         let frame: AuthenticatedFrame = match serde_json::from_str(&line) {
@@ -2995,6 +3273,15 @@ fn run_named_pipe_command_loop(
     Ok(())
 }
 
+/// C1: unauthenticated stdio IPC is only permitted when secure IPC is not
+/// required. Production launches set `EDULEARN_REQUIRE_SECURE_IPC=1`, which
+/// forces the authenticated named-pipe transport and makes the core refuse to
+/// serve commands over plain stdin (which any process able to write our stdin
+/// could otherwise drive).
+fn stdio_ipc_permitted(require_secure_ipc: Option<&str>) -> bool {
+    require_secure_ipc != Some("1")
+}
+
 fn named_pipe_configuration() -> Result<Option<(String, u32, String)>, String> {
     let arguments = std::env::args().collect::<Vec<_>>();
     let Some(index) = arguments
@@ -3021,6 +3308,22 @@ fn main() -> io::Result<()> {
     let dpi_awareness = activate_per_monitor_v2_awareness();
     if std::env::args().any(|argument| argument == "--emergency-restore") {
         return run_emergency_restore();
+    }
+    // Quick one-shot native call used by the exam-shell to return the visible
+    // desktop to Default on a password-verified exit (no IPC session needed).
+    if std::env::args().any(|argument| argument == "--switch-default-desktop") {
+        let restore = restore_default_input_desktop();
+        println!(
+            "{}",
+            json!({
+                "applied": restore.applied,
+                "detail": restore.detail,
+            })
+        );
+        if restore.applied {
+            return Ok(());
+        }
+        return Err(io::Error::new(io::ErrorKind::Other, restore.detail));
     }
 
     let accessibility_recovery =
@@ -3054,12 +3357,24 @@ fn main() -> io::Result<()> {
             io::ErrorKind::Unsupported,
             "Authenticated named-pipe IPC is only supported on Windows.",
         )),
-        None => run_stdio_command_loop(state),
+        None => {
+            let require_secure_ipc =
+                std::env::var("EDULEARN_REQUIRE_SECURE_IPC").ok();
+            if !stdio_ipc_permitted(require_secure_ipc.as_deref()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Unauthenticated stdio IPC is disabled: EDULEARN_REQUIRE_SECURE_IPC=1 \
+                     requires the authenticated named-pipe transport.",
+                ));
+            }
+            run_stdio_command_loop(state)
+        }
     }
 }
 
 #[cfg(test)]
 mod core_state_tests {
+    use super::stdio_ipc_permitted;
     use super::{
         build_idle_protection_status, can_sync_display_topology, has_active_protection,
         process_policy_audit_events,
@@ -3072,7 +3387,17 @@ mod core_state_tests {
         DEFAULT_ENVIRONMENT_SCAN_INTERVAL_MS, SESSION_STATE_INIT,
     };
     use crate::models::ProcessPolicyMatch;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashSet};
+
+    #[test]
+    fn stdio_ipc_refused_only_when_secure_ipc_required() {
+        // Dev / unset → stdio allowed.
+        assert!(stdio_ipc_permitted(None));
+        assert!(stdio_ipc_permitted(Some("0")));
+        assert!(stdio_ipc_permitted(Some("")));
+        // Production flag → stdio refused (must use authenticated named pipe).
+        assert!(!stdio_ipc_permitted(Some("1")));
+    }
 
     fn idle_state() -> CoreRuntimeState {
         CoreRuntimeState {
@@ -3097,6 +3422,8 @@ mod core_state_tests {
                 DEFAULT_ENVIRONMENT_SCAN_INTERVAL_MS,
             ),
             cached_vm_signals: Vec::new(),
+            cached_remote_env_signals: Vec::new(),
+            emitted_detection_ids: HashSet::new(),
             process_collector: ProcessCollector::new(),
             loaded_policy: LoadedExamPolicy::builtin(),
             trusted_policy_keys: TrustedPolicyKeys::default(),

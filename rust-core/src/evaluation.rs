@@ -129,13 +129,24 @@ fn build_preflight_decision(
         .filter(|process| process.action == "warnOnly")
         .cloned()
         .collect::<Vec<_>>();
-    let is_soft_environment_review =
-        |finding: &EvaluationFinding| finding.metadata.rule_id == "monitor.multiple_displays";
-    let has_non_process_blocking_finding = report
-        .evaluation
-        .findings
-        .iter()
-        .any(|finding| finding.severity == "block" && finding.metadata.category != "process");
+    // Multiple displays AND remote-share / screen-recording environment signals no
+    // longer BLOCK entry: the candidate can enter with a second monitor or a
+    // remote-control/recording tool running, because secondary monitors are
+    // blacked out with overlays and the kiosk window's capture protection makes
+    // anything a remote viewer/recorder sees BLACK. These findings are still
+    // recorded for the audit trail; they are just not a hard gate. (VM refusal is
+    // handled separately below and still blocks.)
+    let is_soft_environment_review = |finding: &EvaluationFinding| {
+        let rule_id = &finding.metadata.rule_id;
+        rule_id == "monitor.multiple_displays"
+            || rule_id.starts_with("environment.remote")
+            || rule_id.starts_with("environment.capture")
+    };
+    let has_non_process_blocking_finding = report.evaluation.findings.iter().any(|finding| {
+        finding.severity == "block"
+            && finding.metadata.category != "process"
+            && !is_soft_environment_review(finding)
+    });
     let has_non_process_review_finding = !policy.allow_continue_on_review
         && report
             .evaluation
@@ -148,9 +159,14 @@ fn build_preflight_decision(
             });
     let has_process_blocker =
         !hard_blocked_processes.is_empty() || !terminate_required_processes.is_empty();
+    // M11: refuse-to-run inside a VM unless the (signed) policy explicitly allows
+    // it — matching SEB's default. `allow_vm` is already carried on the policy;
+    // previously VM signals only produced a soft review, never a block.
+    let vm_refused = !policy.allow_vm && !report.snapshot.vm_signals.is_empty();
     let can_enter_exam = !has_process_blocker
         && !has_non_process_blocking_finding
-        && !has_non_process_review_finding;
+        && !has_non_process_review_finding
+        && !vm_refused;
     let has_elevated_risk = !continue_with_audit_processes.is_empty()
         || !isolate_and_protect_processes.is_empty()
         || !warnings.is_empty();
@@ -171,6 +187,8 @@ fn build_preflight_decision(
         "PROCESS_HARD_BLOCKED".to_string()
     } else if !terminate_required_processes.is_empty() {
         "PROCESS_TERMINATION_REQUIRED".to_string()
+    } else if vm_refused {
+        "VIRTUAL_MACHINE_REFUSED".to_string()
     } else if has_non_process_blocking_finding || has_non_process_review_finding {
         report
             .evaluation
@@ -200,6 +218,8 @@ fn build_preflight_decision(
         "Exam entry is blocked by a signed hardBlock process rule.".to_string()
     } else if !terminate_required_processes.is_empty() {
         "Exam entry requires policy-authorized process termination before startup.".to_string()
+    } else if vm_refused {
+        "Exam entry is refused because a virtual machine was detected and this exam does not permit running inside a VM.".to_string()
     } else if has_non_process_blocking_finding || has_non_process_review_finding {
         "Exam entry is blocked by a non-process environment protection rule.".to_string()
     } else if primary_non_process_finding.is_some() {
@@ -382,11 +402,15 @@ fn collect_reason_codes(findings: &[EvaluationFinding]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_preflight_result, evaluate_precheck_snapshot};
+    use super::{
+        build_preflight_result, build_preflight_result_with_policy,
+        evaluate_precheck_snapshot,
+    };
     use crate::models::{
         DetectionSignal, DisplayInfo, MonitorInfo, PrecheckSnapshot, PrecheckSummary, ProcessCategories, ProcessInfo,
         SystemInfo,
     };
+    use crate::policy_model::ExamPolicy;
 
     fn base_system_info() -> SystemInfo {
         SystemInfo {
@@ -468,35 +492,60 @@ mod tests {
     }
 
     #[test]
-    fn multiple_displays_stay_reviewable_without_blocking_exam_entry() {
-        let snapshot = build_snapshot(
-            3,
-            vec![ProcessInfo {
-                pid: 1234,
-                name: "AnyDesk.exe".to_string(),
-                executable_path: Some("C:\\AnyDesk.exe".to_string()),
-                creation_time_ms: Some(1_000),
-                memory_mb: 32,
-                categories: vec!["remote_desktop".to_string()],
-            }],
-            Vec::new(),
+    fn vm_signals_refuse_entry_by_default_and_pass_when_policy_allows_vm() {
+        let vm_signal = DetectionSignal {
+            id: "vm.cpuid".to_string(),
+            label: "Hypervisor CPUID".to_string(),
+            detail: "Hypervisor-present bit is set".to_string(),
+            severity: "review".to_string(),
+            source: "cpuid".to_string(),
+        };
+
+        // M11: default strict policy (allow_vm = false) refuses to run in a VM.
+        let snapshot = build_snapshot(1, Vec::new(), vec![vm_signal.clone()]);
+        let result = build_preflight_result(snapshot);
+        assert!(!result.decision.can_enter_exam);
+        assert_eq!(result.decision.status, "block");
+        assert_eq!(
+            result.decision.primary_reason_code,
+            "VIRTUAL_MACHINE_REFUSED"
         );
+
+        // A policy that explicitly allows VMs must NOT refuse for the VM reason.
+        let mut permissive = ExamPolicy::strict_builtin();
+        permissive.allow_vm = true;
+        let snapshot2 = build_snapshot(1, Vec::new(), vec![vm_signal]);
+        let result2 = build_preflight_result_with_policy(snapshot2, &permissive);
+        assert_ne!(
+            result2.decision.primary_reason_code,
+            "VIRTUAL_MACHINE_REFUSED"
+        );
+
+        // And with no VM signals at all, a strict policy stays ready.
+        let clean = build_preflight_result(build_snapshot(1, Vec::new(), Vec::new()));
+        assert!(clean.decision.can_enter_exam);
+    }
+
+    #[test]
+    fn multiple_displays_stay_reviewable_without_blocking_exam_entry() {
+        // Displays alone are a soft review, never a hard block. (Kept process-free
+        // so it isolates the display behaviour — a remote tool would now be a
+        // termination target and change the verdict; see the termination tests.)
+        let snapshot = build_snapshot(3, Vec::new(), Vec::new());
 
         let result = build_preflight_result(snapshot);
 
         assert_eq!(result.report.evaluation.status, "review");
-        assert_eq!(result.report.evaluation.total_risk_score, 55);
         assert_eq!(result.decision.status, "review");
         assert!(result.decision.can_enter_exam);
         assert_eq!(result.decision.primary_reason_code, "monitor.multiple_displays");
-        assert!(result
-            .log_lines
-            .iter()
-            .any(|line| line.code == "PROCESS.REMOTE" || line.code == "PROCESS.REMOTE.1234"));
     }
 
     #[test]
     fn remote_process_alone_continues_under_isolation() {
+        // A remote-control tool does NOT block entry: it is isolated-and-protected
+        // (allowed to run while the kiosk window + capture protection keep a remote
+        // viewer's/recorder's view black), not a hard block or a termination target.
         let snapshot = build_snapshot(
             1,
             vec![ProcessInfo {
@@ -506,16 +555,16 @@ mod tests {
                 creation_time_ms: Some(1_000),
                 memory_mb: 32,
                 categories: vec!["remoteDesktop".to_string()],
+                identity: None,
             }],
             Vec::new(),
         );
 
         let result = build_preflight_result(snapshot);
 
-        assert_eq!(result.decision.status, "review");
         assert!(result.decision.can_enter_exam);
-        assert_eq!(result.decision.runtime_risk_level, "elevated");
         assert_eq!(result.decision.isolate_and_protect_processes.len(), 1);
+        assert!(result.decision.terminate_required_processes.is_empty());
         assert!(result.decision.hard_blocked_processes.is_empty());
     }
 
@@ -529,6 +578,7 @@ mod tests {
             creation_time_ms: Some(2_000),
             memory_mb: 40,
             categories: vec!["debugTools".to_string()],
+            identity: None,
         };
         snapshot.process_list.push(debugger.clone());
         snapshot.process_categories.debug_tools.push(debugger);

@@ -17,21 +17,58 @@ use windows_service::service_dispatcher;
 
 const SERVICE_NAME: &str = "EduLearnExamGuard";
 
+// Early boot logging — a service has no console, and a hang before
+// set_service_status(Running) is otherwise invisible (StartPending forever). We
+// append synchronously to a file SYSTEM can always write so we can see exactly
+// how far startup got. Never panics.
+fn boot_log(stage: &str) {
+    use std::io::Write;
+    let base = std::env::var_os("PROGRAMDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(r"C:\ProgramData"));
+    let dir = base.join("Edulearn").join("ExamGuard");
+    let _ = std::fs::create_dir_all(&dir);
+    let primary = dir.join("service-boot.log");
+    let fallback = std::path::PathBuf::from(r"C:\Windows\Temp\edulearn-exam-service-boot.log");
+    let line = format!(
+        "{} pid={} {}\n",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0),
+        std::process::id(),
+        stage,
+    );
+    for path in [primary, fallback] {
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = file.write_all(line.as_bytes());
+            break;
+        }
+    }
+}
+
 define_windows_service!(ffi_service_main, service_main);
 
 fn service_main(_arguments: Vec<OsString>) {
+    boot_log("service_main entered");
     if let Err(error) = run_service() {
+        boot_log(&format!("run_service returned Err: {error}"));
         eprintln!("EduLearn Exam Guard service failed: {error}");
+    } else {
+        boot_log("run_service returned Ok");
     }
 }
 
 fn run_service() -> windows_service::Result<()> {
+    boot_log("run_service: loading config");
     let config = transport::load_service_config().map_err(|error| {
+        boot_log(&format!("load_service_config FAILED: {error}"));
         windows_service::Error::Winapi(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             error,
         ))
     })?;
+    boot_log("run_service: config loaded, registering control handler");
     let (stop_sender, stop_receiver) = mpsc::channel();
     let stop = Arc::new(AtomicBool::new(false));
     let handler_stop = Arc::clone(&stop);
@@ -56,6 +93,7 @@ fn run_service() -> windows_service::Result<()> {
         wait_hint: Duration::default(),
         process_id: None,
     })?;
+    boot_log("run_service: set state RUNNING; starting transport");
 
     let transport_stop = Arc::clone(&stop);
     let transport_thread = std::thread::Builder::new()
@@ -103,5 +141,10 @@ fn run_service() -> windows_service::Result<()> {
 }
 
 fn main() -> windows_service::Result<()> {
-    service_dispatcher::start(SERVICE_NAME, ffi_service_main)
+    boot_log("main: calling service_dispatcher::start");
+    let result = service_dispatcher::start(SERVICE_NAME, ffi_service_main);
+    if let Err(ref error) = result {
+        boot_log(&format!("service_dispatcher::start FAILED: {error}"));
+    }
+    result
 }

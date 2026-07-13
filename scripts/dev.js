@@ -3,6 +3,7 @@ const http = require("http");
 const net = require("net");
 const path = require("path");
 const dotenv = require("dotenv");
+const { warnIfCoreBinaryMissing } = require("./core-binary");
 
 dotenv.config({ path: path.join(__dirname, "..", ".env") });
 
@@ -246,6 +247,8 @@ async function run() {
   } else {
     logDesktopRuntime(`Renderer already responding at ${startUrl}`);
   }
+
+  warnIfCoreBinaryMissing(logDesktopRuntime);
 
   logDesktopRuntime(`Launching Electron monitor with URL ${startUrl}`);
   electronProcess = spawnElectronMonitor();

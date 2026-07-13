@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "node scripts/dev.js",
     "desktop": "node scripts/open-electron.js",
+    "desktop:stable": "node scripts/open-electron.js --no-reload",
     "desktop:protected": "node scripts/open-protected-electron.js",
+    "integrity:manifest": "node scripts/generate-integrity-manifest.js --root .",
+    "package": "npm run integrity:manifest && electron-builder --config electron-builder.yml",
     "core:build": "cargo build --manifest-path rust-core/Cargo.toml --release",
     "bootstrapper:build": "cargo build --manifest-path bootstrapper/Cargo.toml --release",
     "bootstrapper:test": "cargo test --manifest-path bootstrapper/Cargo.toml",
@@ -14,6 +17,7 @@
     "desktop-isolation:test": "cargo test --manifest-path desktop-isolation-prototype/Cargo.toml",
     "service:build": "cargo build --manifest-path edulearn-exam-service/Cargo.toml --release",
     "service:test": "cargo test --manifest-path edulearn-exam-service/Cargo.toml",
+    "service:trusted-key": "node edulearn-exam-service/derive-trusted-key.mjs",
     "test": "node --test .\\test\\*.test.js",
     "test:ipc": "node --test .\\test\\named-pipe.integration.js",
     "test:core": "cargo test --manifest-path rust-core/Cargo.toml",

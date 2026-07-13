@@ -452,6 +452,7 @@ impl RuntimeStateEngine {
                 creation_time_ms: known.identity.creation_time_ms,
                 memory_mb: 0,
                 categories: vec!["runtimeStateEngine".to_string()],
+                identity: None,
             })
             .collect()
     }
@@ -717,6 +718,7 @@ mod tests {
             creation_time_ms: Some(500),
             memory_mb: 0,
             categories: Vec::new(),
+            identity: None,
         }
     }
 

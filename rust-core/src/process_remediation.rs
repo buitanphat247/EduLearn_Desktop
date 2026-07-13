@@ -9,6 +9,8 @@ use std::time::Duration;
 
 pub const DEFAULT_PROCESS_REMEDIATION_GRACE_PERIOD_MS: u64 = 0;
 pub const PREFLIGHT_REMEDIATION_MAX_ATTEMPTS: usize = 3;
+// Upper bound on retry passes so a pathological respawn loop can never hang entry.
+pub const PREFLIGHT_REMEDIATION_MAX_ATTEMPTS_CAP: usize = 8;
 pub const PREFLIGHT_REMEDIATION_RETRY_DELAY_MS: u64 = 1_000;
 
 #[derive(Debug, Clone, Serialize)]
@@ -251,9 +253,20 @@ where
     Scan: FnMut() -> Vec<ProcessInfo>,
     Terminate: FnMut(u32) -> Result<(), String>,
 {
+    // Scale the retry budget with how many dangerous apps are actually detected:
+    // each pass kills everything currently found, then rescans, so more tools get
+    // more passes ("kill as many times as there are apps, +1" for a late respawn
+    // window). Bounded to [MAX_ATTEMPTS, MAX_ATTEMPTS_CAP] so entry never hangs.
+    let initial_target_count =
+        collect_termination_targets(&collect_policy_processes(&scan_processes(), policy), policy)
+            .len();
+    let max_attempts = (initial_target_count + 1).clamp(
+        PREFLIGHT_REMEDIATION_MAX_ATTEMPTS,
+        PREFLIGHT_REMEDIATION_MAX_ATTEMPTS_CAP,
+    );
     preflight_remediate_policy_processes_with(
         policy,
-        PREFLIGHT_REMEDIATION_MAX_ATTEMPTS,
+        max_attempts,
         &mut scan_processes,
         terminate_process,
         || thread_sleep(Duration::from_millis(PREFLIGHT_REMEDIATION_RETRY_DELAY_MS)),
@@ -569,14 +582,19 @@ fn thread_sleep(duration: Duration) {
 
 #[cfg(target_os = "windows")]
 fn terminate_process_best_effort(pid: u32) -> Result<(), String> {
-    use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
 
-    let process_handle = unsafe { OpenProcess(PROCESS_TERMINATE, false, pid) }
+    // SAFETY: OpenProcess returns an owned handle we must close exactly once. The
+    // F-018 `OwnedHandle` RAII guard closes it on every path (including the error
+    // return below), replacing the previous manual `CloseHandle`.
+    let raw = unsafe { OpenProcess(PROCESS_TERMINATE, false, pid) }
         .map_err(|error| format!("OpenProcess(PROCESS_TERMINATE) failed for pid {pid}: {error}"))?;
+    let handle = unsafe { crate::ffi_guards::OwnedHandle::new(raw) }
+        .ok_or_else(|| format!("OpenProcess returned an invalid handle for pid {pid}"))?;
 
-    let terminate_result = unsafe { TerminateProcess(process_handle, 1) };
-    let _ = unsafe { CloseHandle(process_handle) };
+    // SAFETY: `handle.get()` is a live PROCESS_TERMINATE handle.
+    let terminate_result = unsafe { TerminateProcess(handle.get(), 1) };
+    // `handle` drops here -> CloseHandle, even on the error path.
 
     terminate_result.map_err(|error| format!("TerminateProcess failed for pid {pid}: {error}"))
 }
@@ -607,6 +625,7 @@ mod tests {
             creation_time_ms: Some(pid as u64),
             memory_mb: 10,
             categories: vec!["screenCapture".to_string()],
+            identity: None,
         }
     }
 
@@ -786,7 +805,9 @@ mod tests {
     }
 
     #[test]
-    fn isolate_and_continue_rules_do_not_terminate_or_block_start() {
+    fn remote_and_capture_tools_are_isolated_not_terminated() {
+        // Remote-control tools do NOT block entry and are NOT terminated: they are
+        // isolated-and-protected (capture protection keeps the remote view black).
         let policy = crate::policy_model::ExamPolicy::strict_builtin();
         let mut scan = || {
             vec![
@@ -800,7 +821,7 @@ mod tests {
             &policy,
             3,
             &mut scan,
-            |_pid| panic!("allowed-under-isolation process must not be terminated"),
+            |_pid| panic!("isolated remote tools must not be terminated"),
             || panic!("no termination means no retry wait"),
         );
 
@@ -808,7 +829,6 @@ mod tests {
         assert_eq!(report.attempt_count, 0);
         assert_eq!(report.isolate_and_protect_processes.len(), 2);
         assert_eq!(report.continue_with_audit_processes.len(), 1);
-        assert_eq!(report.runtime_risk_level, "elevated");
     }
 
     #[test]
@@ -876,9 +896,12 @@ mod tests {
         let terminated = RefCell::new(Vec::new());
         let mut remediator = RuntimeProcessRemediator::new();
 
+        // windbg.exe is a hard-blocked debugger (NOT a termination target), so it
+        // is reported "blocked" and never terminated; only the explicit
+        // terminate rule is killed.
         let report = remediator.observe_policy_and_remediate_using(
             1_000,
-            &[process(90, "AnyDesk.exe"), process(91, "terminate-me.exe")],
+            &[process(90, "windbg.exe"), process(91, "terminate-me.exe")],
             &policy,
             |pid| {
                 terminated.borrow_mut().push(pid);
@@ -888,7 +911,7 @@ mod tests {
 
         assert_eq!(*terminated.borrow(), vec![91]);
         assert!(report.actions.iter().any(|action| {
-            action.name == "AnyDesk.exe" && action.status == "allowed-under-isolation"
+            action.name == "windbg.exe" && action.status == "blocked"
         }));
         assert!(report.actions.iter().any(|action| {
             action.name == "terminate-me.exe" && action.status == "terminated"

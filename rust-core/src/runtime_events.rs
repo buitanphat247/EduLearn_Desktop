@@ -1,5 +1,6 @@
+use crate::models::DetectionSignal;
 use serde::Serialize;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 
 pub const EVENT_PROCESS_CREATED: &str = "ProcessCreated";
 pub const EVENT_PROCESS_EXITED: &str = "ProcessExited";
@@ -17,6 +18,12 @@ pub const EVENT_GUARD_RESTARTED: &str = "GuardRestarted";
 pub const EVENT_CLIPBOARD_CHANGED: &str = "ClipboardChanged";
 pub const EVENT_FOCUS_CHANGED: &str = "FocusChanged";
 pub const EVENT_CAPTURE_DETECTED: &str = "CaptureDetected";
+/// P47-04: proactive anti-debug hit surfaced from the runtime monitor tick
+/// (previously only observable when the client polled `check_debugger`).
+pub const EVENT_ANTI_DEBUG_DETECTED: &str = "AntiDebugDetected";
+/// P47-04: report-only process heuristic (rename mismatch / volatile-unsigned)
+/// surfaced from the tick instead of only from a client `scan_process_heuristics`.
+pub const EVENT_PROCESS_HEURISTIC: &str = "ProcessHeuristic";
 pub const EVENT_POLICY_RELOADED: &str = "PolicyReloaded";
 pub const EVENT_DESKTOP_CHANGED: &str = "DesktopChanged";
 pub const EVENT_DESKTOP_RECOVERED: &str = "DesktopRecovered";
@@ -28,6 +35,27 @@ pub const EVENT_RECOVERY_FINISHED: &str = "RecoveryFinished";
 pub const EVENT_RUNTIME_STOPPED: &str = "RuntimeStopped";
 pub const EVENT_RUNTIME_STATE_CHANGED: &str = "RuntimeStateChanged";
 pub const EVENT_WATCHDOG_RESTART: &str = "WatchdogRestart";
+
+/// P47-04 edge-trigger. Given the detection signals present on THIS tick and the
+/// set of signal ids that were present on the PREVIOUS tick, return the signals
+/// to emit now (only ids that just appeared) plus the next "present" set to carry
+/// forward. This gives event-on-transition semantics so a debugger that stays
+/// attached does not flood the bounded ring every tick, while a signal that
+/// clears and later re-appears fires again.
+pub fn newly_active_signals<'a>(
+    signals: &'a [DetectionSignal],
+    previously_present: &HashSet<String>,
+) -> (Vec<&'a DetectionSignal>, HashSet<String>) {
+    let mut next = HashSet::with_capacity(signals.len());
+    let mut fresh = Vec::new();
+    for signal in signals {
+        let first_this_tick = next.insert(signal.id.clone());
+        if first_this_tick && !previously_present.contains(&signal.id) {
+            fresh.push(signal);
+        }
+    }
+    (fresh, next)
+}
 
 fn is_known_runtime_event_kind(kind: &str) -> bool {
     matches!(
@@ -48,6 +76,8 @@ fn is_known_runtime_event_kind(kind: &str) -> bool {
             | EVENT_CLIPBOARD_CHANGED
             | EVENT_FOCUS_CHANGED
             | EVENT_CAPTURE_DETECTED
+            | EVENT_ANTI_DEBUG_DETECTED
+            | EVENT_PROCESS_HEURISTIC
             | EVENT_POLICY_RELOADED
             | EVENT_DESKTOP_CHANGED
             | EVENT_DESKTOP_RECOVERED
@@ -227,10 +257,51 @@ pub fn metadata(entries: &[(&str, String)]) -> BTreeMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        metadata, RuntimeEventBus, EVENT_CAPTURE_DETECTED, EVENT_DESKTOP_CHANGED,
-        EVENT_GUARD_DEGRADED, EVENT_GUARD_RESTORED, EVENT_PROCESS_CREATED,
+        metadata, newly_active_signals, RuntimeEventBus, EVENT_CAPTURE_DETECTED,
+        EVENT_DESKTOP_CHANGED, EVENT_GUARD_DEGRADED, EVENT_GUARD_RESTORED, EVENT_PROCESS_CREATED,
         EVENT_PRODUCER_CHANGED, EVENT_PRODUCER_DEGRADED, EVENT_PRODUCER_HEARTBEAT,
     };
+    use crate::models::DetectionSignal;
+    use std::collections::HashSet;
+
+    fn signal(id: &str) -> DetectionSignal {
+        DetectionSignal {
+            id: id.to_string(),
+            label: id.to_string(),
+            detail: id.to_string(),
+            severity: "warning".to_string(),
+            source: "test".to_string(),
+        }
+    }
+
+    #[test]
+    fn edge_trigger_emits_once_then_re_fires_after_clearing() {
+        // P47-04: a signal present across consecutive ticks emits only on the tick
+        // it first appears (no per-tick flooding), and re-fires if it clears then
+        // returns.
+        let mut seen: HashSet<String> = HashSet::new();
+
+        let tick1 = vec![signal("a"), signal("b")];
+        let (fresh, next) = newly_active_signals(&tick1, &seen);
+        assert_eq!(fresh.len(), 2);
+        seen = next;
+
+        // Same two signals still present -> nothing new to push.
+        let (fresh, next) = newly_active_signals(&tick1, &seen);
+        assert!(fresh.is_empty());
+        seen = next;
+
+        // "a" clears (only "b" present) -> still nothing new.
+        let only_b = [signal("b")];
+        let (fresh, next) = newly_active_signals(&only_b, &seen);
+        assert!(fresh.is_empty());
+        seen = next;
+
+        // "a" returns -> it re-fires (edge on re-appearance), "b" stays quiet.
+        let (fresh, _next) = newly_active_signals(&tick1, &seen);
+        assert_eq!(fresh.len(), 1);
+        assert_eq!(fresh[0].id, "a");
+    }
 
     #[test]
     fn caps_event_queue() {

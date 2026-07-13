@@ -64,6 +64,21 @@ pub struct DisplayInfo {
     pub monitors: Vec<MonitorInfo>,
 }
 
+/// Runtime-only identity read from an executable's version-info resource.
+///
+/// This is defense-in-depth against the "rename the .exe to dodge the name
+/// blacklist" bypass. It is NOT part of the signed policy schema — it is
+/// collected at runtime and only used to enrich name matching. Kept optional so
+/// processes without a readable version resource fall back to name-only checks.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutableIdentity {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_filename: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub company_name: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessInfo {
@@ -73,6 +88,8 @@ pub struct ProcessInfo {
     pub creation_time_ms: Option<u64>,
     pub memory_mb: u64,
     pub categories: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity: Option<ExecutableIdentity>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

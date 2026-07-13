@@ -1,7 +1,8 @@
+use crate::collectors::read_executable_identity;
 use crate::etw_producer::EtwProcessProducer;
 use crate::models::ProcessInfo;
 use crate::policy_model::ExamPolicy;
-use crate::process_policy::is_process_prohibited;
+use crate::process_policy::is_process_prohibited_with_identity;
 use crate::runtime_state_engine::{
     ProcessIdentity, ProducerHealthSnapshot, RuntimeProcessEvent, RuntimeProcessEventKind,
     RuntimeStateProducer,
@@ -1031,7 +1032,11 @@ impl ProcessCreationWatcher {
                 .retain(|_, identity_key| identity_key != &oldest_key);
         }
 
-        if is_process_prohibited(&event.name, policy) {
+        let identity = event
+            .executable_path
+            .as_deref()
+            .and_then(read_executable_identity);
+        if is_process_prohibited_with_identity(&event.name, identity.as_ref(), policy) {
             return ProcessWatcherDecision::Remediate(ProcessInfo {
                 pid: event.pid,
                 name: event.name,
@@ -1039,6 +1044,7 @@ impl ProcessCreationWatcher {
                 creation_time_ms: event.creation_time_ms,
                 memory_mb: 0,
                 categories: vec!["processWatcher".to_string()],
+                identity,
             });
         }
 

@@ -1,0 +1,5 @@
+exam-guard-keys.local.json
+run-install.local.ps1
+service-diagnostic.local.txt
+service-boot.dumped.log
+dump-boot-log.local.ps1

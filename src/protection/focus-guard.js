@@ -1,3 +1,12 @@
+const { app } = require("electron");
+
+// Only yield the focus lock to open DevTools in development. In a packaged build
+// the guard keeps refocusing even if DevTools is somehow opened, so DevTools
+// cannot be abused as an escape hatch during a real exam.
+function yieldToDevTools(win) {
+  return !app.isPackaged && win.webContents.isDevToolsOpened();
+}
+
 function createFocusGuard({ getMainWindow, onRuntimeEvent = () => {} }) {
   let active = false;
   let attachedWindow = null;
@@ -34,7 +43,7 @@ function createFocusGuard({ getMainWindow, onRuntimeEvent = () => {} }) {
       return;
     }
 
-    if (mainWindow.webContents.isDevToolsOpened()) {
+    if (yieldToDevTools(mainWindow)) {
       return;
     }
 
@@ -102,7 +111,7 @@ function createFocusGuard({ getMainWindow, onRuntimeEvent = () => {} }) {
 
     monitorInterval = setInterval(() => {
       const currentWindow = getMainWindow();
-      if (!active || !currentWindow || currentWindow.isDestroyed() || currentWindow.webContents.isDevToolsOpened()) {
+      if (!active || !currentWindow || currentWindow.isDestroyed() || yieldToDevTools(currentWindow)) {
         return;
       }
 

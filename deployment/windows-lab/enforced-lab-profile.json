@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "profileId": "edulearn-exam-lab-enforced-v1",
+  "managedDevicesOnly": true,
+  "deploymentMode": "enforce",
+  "candidateAccount": "EduLearnExamCandidate",
+  "assignedAccess": {
+    "enabled": true,
+    "account": "EduLearnExamCandidate",
+    "appUserModelId": null,
+    "shellLauncherExePath": null
+  },
+  "appLocker": {
+    "enforcementMode": "Enabled",
+    "allowEduLearnPublisherRule": true,
+    "denyUnmanagedRemoteAndCaptureTools": true,
+    "eduLearnPublisher": "O=EDULEARN, L=HANOI, C=VN"
+  },
+  "wdac": {
+    "policyMode": "Enforced",
+    "requireSignedBinaries": true,
+    "supplementalPolicyAllowed": true
+  },
+  "groupPolicy": {
+    "disableTaskManager": true,
+    "disableCommandPrompt": true,
+    "disablePowerShellForCandidateAccount": true,
+    "disableRemoteDesktop": true,
+    "disableFastUserSwitching": true,
+    "disableRegistryTools": true,
+    "disableLockWorkstation": true,
+    "hideStartMenuPowerButtons": false,
+    "noControlPanel": true,
+    "disableChangePassword": false
+  },
+  "deniedProcessImages": [
+    "anydesk.exe",
+    "teamviewer.exe",
+    "ultraviewer.exe",
+    "rustdesk.exe",
+    "parsecd.exe",
+    "obs64.exe",
+    "bandicam.exe",
+    "sharex.exe",
+    "camtasiastudio.exe"
+  ],
+  "rollout": {
+    "pilotRingRequired": true,
+    "auditDays": 7,
+    "recoveryAccountRequired": true,
+    "restorePointRequired": true,
+    "helpDeskRunbookRequired": true
+  }
+}

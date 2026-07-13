@@ -11,6 +11,7 @@ pub struct RuntimeTickPlan {
 pub struct RuntimeMonitorScheduler {
     environment_scan_interval_ms: u64,
     last_environment_scan_at: Option<u64>,
+    last_tick_at: Option<u64>,
 }
 
 impl RuntimeMonitorScheduler {
@@ -18,10 +19,12 @@ impl RuntimeMonitorScheduler {
         Self {
             environment_scan_interval_ms,
             last_environment_scan_at: None,
+            last_tick_at: None,
         }
     }
 
     pub fn next_tick(&mut self, now_ms: u64) -> RuntimeTickPlan {
+        self.last_tick_at = Some(now_ms);
         // Process remediation and guard healing are fast-path work. Hardware and
         // VM inspection refreshes broader system state and therefore runs slower.
         let environment_scan_due = self
@@ -42,8 +45,20 @@ impl RuntimeMonitorScheduler {
         }
     }
 
+    /// M3/P2-1 — has the external driver (Electron) stopped ticking? The core's
+    /// autonomous self-heal loop uses this to keep re-arming guards even when the
+    /// pull-based driver goes silent (previously remediation stalled with it).
+    /// False before the first tick (nothing to compare against yet).
+    pub fn is_externally_stalled(&self, now_ms: u64, max_idle_ms: u64) -> bool {
+        match self.last_tick_at {
+            Some(last) => now_ms.saturating_sub(last) >= max_idle_ms,
+            None => false,
+        }
+    }
+
     pub fn reset(&mut self) {
         self.last_environment_scan_at = None;
+        self.last_tick_at = None;
     }
 }
 
@@ -73,6 +88,23 @@ mod tests {
         assert!(!scheduler.next_tick(11_000).environment_scan_due);
         assert!(!scheduler.next_tick(14_999).environment_scan_due);
         assert!(scheduler.next_tick(15_000).environment_scan_due);
+    }
+
+    #[test]
+    fn detects_when_the_external_driver_has_stalled() {
+        let mut scheduler = RuntimeMonitorScheduler::new(5_000);
+        // Before any tick there is nothing to compare against.
+        assert!(!scheduler.is_externally_stalled(10_000, 3_000));
+
+        let _ = scheduler.next_tick(10_000);
+        // Within the idle window → not stalled.
+        assert!(!scheduler.is_externally_stalled(12_999, 3_000));
+        // Past the idle window with no fresh tick → stalled (self-heal kicks in).
+        assert!(scheduler.is_externally_stalled(13_000, 3_000));
+
+        // A fresh tick clears the stall.
+        let _ = scheduler.next_tick(13_000);
+        assert!(!scheduler.is_externally_stalled(13_500, 3_000));
     }
 
     #[test]

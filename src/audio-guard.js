@@ -51,6 +51,27 @@ function resolveAudioDirective(snapshot, governorAudioState = null) {
   );
 }
 
+// Pure helper: pick the disallowed media/browser processes out of a Get-Process
+// dump. Exported for unit testing.
+function selectMediaProcesses(processes, allowedNames) {
+  const matched = [];
+  for (const info of processes) {
+    const name = String(info?.ProcessName ?? "").toLowerCase();
+    if (allowedNames.has(name)) {
+      matched.push({ name, id: Number(info?.Id) });
+    }
+  }
+  return matched;
+}
+
+// Enforcement mode for the per-process media scan. Defaults to "report" (log
+// only, unchanged behaviour) so enabling termination is a deliberate, tested
+// step — mirroring the URL-filter and GPO report-first posture. The master
+// endpoint is already muted while the lock is active regardless of this mode.
+function resolveAudioEnforceMode(env = process.env) {
+  return env.EDULEARN_AUDIO_ENFORCE === "kill" ? "kill" : "report";
+}
+
 function runPowerShell(script, timeoutMs = 3000) {
   return new Promise((resolve) => {
     execFile(
@@ -224,17 +245,45 @@ function createAudioGuard({ getMainWindow, examGuardTracer }) {
       return;
     }
 
-    for (const processInfo of processes) {
-      const processName = String(processInfo?.ProcessName ?? "").toLowerCase();
-      if (!MEDIA_PROCESS_NAMES.has(processName)) {
-        continue;
-      }
+    const matched = selectMediaProcesses(processes, MEDIA_PROCESS_NAMES);
+    if (matched.length === 0) {
+      return;
+    }
 
+    const mode = resolveAudioEnforceMode();
+    for (const media of matched) {
       record("AUDIO_BLOCKED_PROCESS", {
-        processName,
-        action: "force_mute_output_stream_via_master_endpoint",
-        reason,
+        processName: media.name,
+        action:
+          mode === "kill"
+            ? "terminate_media_process"
+            : "flagged_report_only_master_endpoint_muted",
+        reason: `${reason}:pid=${media.id}:mode=${mode}`,
       });
+    }
+
+    if (mode === "kill") {
+      // Kill by NAME in a single pipeline so there is no window between listing
+      // PIDs and terminating them (a PID could be reused by an unrelated, even
+      // critical, process in that gap). Names come from MEDIA_PROCESS_NAMES, so
+      // there is no injection surface. Each is single-quoted to survive spaces.
+      const names = [...new Set(matched.map((media) => media.name))];
+      if (names.length > 0) {
+        const quoted = names.map((name) => `'${name}'`).join(",");
+        const killResult = await runPowerShell(
+          `Get-Process -Name ${quoted} -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue`,
+          4000,
+        );
+        record("AUDIO_BLOCKED_PROCESS", {
+          processName: "media-batch",
+          action: killResult.ok
+            ? "terminate_media_process_done"
+            : "terminate_media_process_failed",
+          reason: killResult.ok
+            ? `killed:${names.join(",")}`
+            : killResult.error ?? killResult.stderr ?? reason,
+        });
+      }
     }
   }
 
@@ -327,4 +376,6 @@ function createAudioGuard({ getMainWindow, examGuardTracer }) {
 module.exports = {
   createAudioGuard,
   resolveAudioDirective,
+  selectMediaProcesses,
+  resolveAudioEnforceMode,
 };

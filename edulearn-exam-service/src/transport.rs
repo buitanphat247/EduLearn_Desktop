@@ -70,7 +70,12 @@ pub fn load_service_config() -> Result<ServiceConfig, String> {
     if bytes.len() as u64 > MAX_REQUEST_BYTES {
         return Err("Service configuration is too large.".to_string());
     }
-    let config: ServiceConfig = serde_json::from_slice(&bytes)
+    // Strip a leading UTF-8 BOM: Windows PowerShell 5.1's `Set-Content -Encoding
+    // UTF8` prepends one (EF BB BF), which serde_json rejects at column 1.
+    let content = bytes
+        .strip_prefix(&[0xEF_u8, 0xBB, 0xBF])
+        .unwrap_or(bytes.as_slice());
+    let config: ServiceConfig = serde_json::from_slice(content)
         .map_err(|error| format!("Service configuration is invalid: {error}"))?;
     if config.allowed_client_sha256.len() != 64
         || !config
@@ -352,12 +357,27 @@ fn handle_client(
             now_ms(),
             std::process::id(),
         )?;
+    // Prevent respawn: if this PID is a Windows service's main process, disable
+    // + stop the service BEFORE terminating so the SCM cannot restart it.
+    let disabled_service = match stop_and_disable_service_for_pid(request.target_pid) {
+        Ok(name) => name,
+        Err(error) => {
+            eprintln!("EduLearn service: could not stop owning service: {error}");
+            None
+        }
+    };
     unsafe { TerminateProcess(target.handle, 1) }
         .map_err(|error| format!("Elevated TerminateProcess failed: {error}"))?;
+    let message = match disabled_service {
+        Some(name) => format!(
+            "{process_name} was terminated and its service '{name}' was stopped + disabled by signed exam policy."
+        ),
+        None => format!("{process_name} was terminated by signed exam policy."),
+    };
     let response = ServiceResponse {
         ok: true,
         code: "PROCESS_TERMINATED".to_string(),
-        message: format!("{process_name} was terminated by signed exam policy."),
+        message,
         target_pid: Some(request.target_pid),
     };
     serde_json::to_writer(&mut writer, &response)
@@ -456,6 +476,103 @@ fn query_process_path(
     .map_err(|error| format!("QueryFullProcessImageNameW failed: {error}"))?;
     buffer.truncate(length as usize);
     Ok(PathBuf::from(std::ffi::OsString::from_wide(&buffer)))
+}
+
+/// If the target PID is the MAIN process of a Windows service (e.g. Parsec /
+/// AnyDesk / TeamViewer run as auto-restart services), DISABLE + STOP that
+/// service so the SCM cannot respawn it the instant we terminate the process.
+/// TerminateProcess alone looks like a crash to the SCM, which then runs the
+/// service's recovery action (restart) — that is why Parsec came back. A clean
+/// stop does NOT trigger recovery, and disabling makes any restart attempt fail.
+/// The PID was already authorized against the signed policy by the caller, so we
+/// only ever touch the service owning that authorized PID. Best-effort — a
+/// non-service target simply yields `None`.
+fn stop_and_disable_service_for_pid(pid: u32) -> Result<Option<String>, String> {
+    use windows::core::PCWSTR;
+    use windows::Win32::System::Services::{
+        CloseServiceHandle, EnumServicesStatusExW, OpenSCManagerW,
+        ENUM_SERVICE_STATUS_PROCESSW, SC_ENUM_PROCESS_INFO, SC_MANAGER_CONNECT,
+        SC_MANAGER_ENUMERATE_SERVICE, SERVICE_STATE_ALL, SERVICE_WIN32,
+    };
+
+    if pid == 0 {
+        return Ok(None);
+    }
+
+    let scm = unsafe {
+        OpenSCManagerW(
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SC_MANAGER_CONNECT | SC_MANAGER_ENUMERATE_SERVICE,
+        )
+    }
+    .map_err(|error| format!("OpenSCManagerW failed: {error}"))?;
+
+    let result = (|| {
+        let mut bytes_needed = 0_u32;
+        let mut count = 0_u32;
+        let mut resume = 0_u32;
+        // First call sizes the buffer (fails with ERROR_MORE_DATA — ignored).
+        let _ = unsafe {
+            EnumServicesStatusExW(
+                scm,
+                SC_ENUM_PROCESS_INFO,
+                SERVICE_WIN32,
+                SERVICE_STATE_ALL,
+                None,
+                &mut bytes_needed,
+                &mut count,
+                Some(&mut resume),
+                PCWSTR::null(),
+            )
+        };
+        if bytes_needed == 0 {
+            return Ok(None);
+        }
+        let mut buffer = vec![0_u8; bytes_needed as usize];
+        unsafe {
+            EnumServicesStatusExW(
+                scm,
+                SC_ENUM_PROCESS_INFO,
+                SERVICE_WIN32,
+                SERVICE_STATE_ALL,
+                Some(buffer.as_mut_slice()),
+                &mut bytes_needed,
+                &mut count,
+                Some(&mut resume),
+                PCWSTR::null(),
+            )
+        }
+        .map_err(|error| format!("EnumServicesStatusExW failed: {error}"))?;
+
+        let entries = unsafe {
+            std::slice::from_raw_parts(
+                buffer.as_ptr() as *const ENUM_SERVICE_STATUS_PROCESSW,
+                count as usize,
+            )
+        };
+        for entry in entries {
+            if entry.ServiceStatusProcess.dwProcessId != pid {
+                continue;
+            }
+            let name = unsafe { entry.lpServiceName.to_string() }
+                .map_err(|_| "Service name is not valid UTF-16.".to_string())?;
+            // We run as SYSTEM → sc.exe can reconfigure/stop the service. Using
+            // sc.exe avoids the many typed args of ChangeServiceConfigW.
+            // NOTE: `start= disabled` REQUIRES the space after '='.
+            let _ = std::process::Command::new("sc.exe")
+                .args(["config", &name, "start=", "disabled"])
+                .output();
+            let _ = std::process::Command::new("sc.exe")
+                .args(["stop", &name])
+                .output();
+            return Ok(Some(name));
+        }
+        Ok(None)
+    })();
+
+    let _ = unsafe { CloseServiceHandle(scm) };
+    result
 }
 
 fn verify_client_identity(pid: u32, config: &ServiceConfig) -> Result<(), String> {

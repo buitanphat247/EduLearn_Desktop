@@ -1803,7 +1803,10 @@ function createDesktopCoreRuntime({
           normalizedRequest.cmd === "preflight_kill" ||
           normalizedRequest.cmd === "run_preflight" ||
           normalizedRequest.cmd === "start_exam_session" ||
-          normalizedRequest.cmd === "request_emergency_restore"
+          normalizedRequest.cmd === "request_emergency_restore" ||
+          // Creating the isolated desktop spawns an Electron process, which can
+          // take longer than the default handshake timeout.
+          normalizedRequest.cmd === "create_exam_desktop"
             ? 15000
             : normalizedRequest.cmd === "exit_exam_session" ||
                 normalizedRequest.cmd === "force_restore_desktop"

@@ -1,18 +1,29 @@
 use crate::models::{
-    DetectionSignal, DisplayInfo, MonitorInfo, PrecheckSnapshot, PrecheckSummary, ProcessCategories,
-    ProcessInfo, SystemInfo,
+    DetectionSignal, DisplayInfo, ExecutableIdentity, MonitorInfo, PrecheckSnapshot,
+    PrecheckSummary, ProcessCategories, ProcessInfo, SystemInfo,
 };
 use crate::process_policy::{
-    categorize_process_name_with_policy, contains_vm_vendor, CATEGORY_BROWSER,
+    categorize_process_with_identity, contains_vm_vendor, CATEGORY_BROWSER,
     CATEGORY_COMMUNICATION, CATEGORY_DEBUG_TOOLS, CATEGORY_POLICY_BLOCKED,
     CATEGORY_REMOTE_DESKTOP, CATEGORY_SCREEN_CAPTURE, CATEGORY_VIRTUAL_MACHINE,
 };
 use crate::policy_model::ExamPolicy;
 use std::env;
+use std::ffi::c_void;
 use sysinfo::{ProcessRefreshKind, System, UpdateKind};
+use windows::core::PCWSTR;
 use windows::Win32::Foundation::{BOOL, LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
+    EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW, DISPLAY_DEVICEW,
+    DISPLAY_DEVICE_MIRRORING_DRIVER, HDC, HMONITOR, MONITORINFOEXW,
+};
+use windows::Win32::NetworkManagement::IpHelper::{
+    GetAdaptersAddresses, GetExtendedTcpTable, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER,
+    GAA_FLAG_SKIP_MULTICAST, IP_ADAPTER_ADDRESSES_LH, MIB_TCPTABLE_OWNER_PID,
+    TCP_TABLE_OWNER_PID_ALL,
+};
+use windows::Win32::Storage::FileSystem::{
+    GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_REMOTESESSION};
 use winreg::enums::HKEY_LOCAL_MACHINE;
@@ -153,19 +164,108 @@ fn build_process_list(system: &System, policy: &ExamPolicy) -> Vec<ProcessInfo> 
         .values()
         .map(|process| {
             let name = process.name().to_string();
+            let executable_path = process.exe().map(|path| path.display().to_string());
+            let identity = executable_path
+                .as_deref()
+                .and_then(read_executable_identity);
+            let categories = categorize_process_with_identity(&name, identity.as_ref(), policy);
             ProcessInfo {
                 pid: process.pid().as_u32(),
-                name: name.clone(),
-                executable_path: process.exe().map(|path| path.display().to_string()),
+                name,
+                executable_path,
                 creation_time_ms: Some(process.start_time().saturating_mul(1_000)),
                 memory_mb: bytes_to_mb(process.memory()),
-                categories: categorize_process_name_with_policy(&name, policy),
+                categories,
+                identity,
             }
         })
         .collect::<Vec<_>>();
 
     processes.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
     processes
+}
+
+/// Read the `OriginalFilename` and `CompanyName` from an executable's Win32
+/// version-info resource. Best-effort: any failure (missing resource, unreadable
+/// file, no string table) yields `None` so callers fall back to name-only checks.
+pub(crate) fn read_executable_identity(path: &str) -> Option<ExecutableIdentity> {
+    let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    let filename = PCWSTR(wide.as_ptr());
+
+    unsafe {
+        let size = GetFileVersionInfoSizeW(filename, None);
+        if size == 0 {
+            return None;
+        }
+
+        let mut buffer = aligned_byte_buffer(size as usize);
+        GetFileVersionInfoW(filename, 0, size, buffer.as_mut_ptr() as *mut c_void).ok()?;
+
+        let sub_block = version_translation(&buffer);
+        let original_filename = version_query_string(&buffer, &sub_block, "OriginalFilename");
+        let company_name = version_query_string(&buffer, &sub_block, "CompanyName");
+        if original_filename.is_none() && company_name.is_none() {
+            return None;
+        }
+
+        Some(ExecutableIdentity {
+            original_filename,
+            company_name,
+        })
+    }
+}
+
+/// Resolve the first `language/codepage` translation into the hex sub-block used
+/// by `\StringFileInfo\<lang><codepage>\...` queries. Falls back to US-English
+/// Unicode (`040904b0`) when no translation table is present.
+unsafe fn version_translation(buffer: &[u64]) -> String {
+    const FALLBACK: &str = "040904b0";
+    let query: Vec<u16> = "\\VarFileInfo\\Translation"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut value_ptr: *mut c_void = std::ptr::null_mut();
+    let mut value_len: u32 = 0;
+
+    let ok = VerQueryValueW(
+        buffer.as_ptr() as *const c_void,
+        PCWSTR(query.as_ptr()),
+        &mut value_ptr,
+        &mut value_len,
+    );
+    if !ok.as_bool() || value_ptr.is_null() || value_len < 4 {
+        return FALLBACK.to_string();
+    }
+
+    let language = *(value_ptr as *const u16);
+    let codepage = *((value_ptr as *const u16).add(1));
+    format!("{language:04x}{codepage:04x}")
+}
+
+unsafe fn version_query_string(buffer: &[u64], sub_block: &str, field: &str) -> Option<String> {
+    let query = format!("\\StringFileInfo\\{sub_block}\\{field}");
+    let wide: Vec<u16> = query.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut value_ptr: *mut c_void = std::ptr::null_mut();
+    let mut value_len: u32 = 0;
+
+    let ok = VerQueryValueW(
+        buffer.as_ptr() as *const c_void,
+        PCWSTR(wide.as_ptr()),
+        &mut value_ptr,
+        &mut value_len,
+    );
+    if !ok.as_bool() || value_ptr.is_null() || value_len == 0 {
+        return None;
+    }
+
+    let chars = std::slice::from_raw_parts(value_ptr as *const u16, value_len as usize);
+    let text = String::from_utf16_lossy(chars);
+    let trimmed = text.trim_end_matches('\0').trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 pub fn collect_process_categories_from_processes(processes: &[ProcessInfo]) -> ProcessCategories {
@@ -185,6 +285,9 @@ pub fn collect_vm_signals(
     process_categories: &ProcessCategories,
 ) -> Vec<DetectionSignal> {
     let mut signals = Vec::new();
+
+    signals.extend(collect_hypervisor_signals());
+    signals.extend(collect_mac_vm_signals());
 
     if let Some(manufacturer) = system_info.system_manufacturer.as_ref() {
         let normalized = manufacturer.to_lowercase();
@@ -225,7 +328,22 @@ pub fn collect_vm_signals(
     signals
 }
 
+/// Full remote-access signal set (session + environment). Used by the one-shot
+/// precheck snapshot. The runtime tick uses the cheap `collect_remote_session_signals`
+/// every tick and the expensive `collect_remote_environment_signals` only on the
+/// slow (cached) environment scan — see the runtime monitor.
 pub fn collect_remote_signals(process_categories: &ProcessCategories) -> Vec<DetectionSignal> {
+    let mut signals = collect_remote_session_signals(process_categories);
+    signals.extend(collect_remote_environment_signals());
+    signals
+}
+
+/// Cheap remote-access signals safe to compute on every runtime tick: prohibited
+/// remote-desktop processes plus native RDP session detection (`SESSIONNAME`,
+/// `SM_REMOTESESSION`).
+pub fn collect_remote_session_signals(
+    process_categories: &ProcessCategories,
+) -> Vec<DetectionSignal> {
     let mut signals = process_categories
         .remote_desktop
         .iter()
@@ -260,6 +378,15 @@ pub fn collect_remote_signals(process_categories: &ProcessCategories) -> Vec<Det
         });
     }
 
+    signals
+}
+
+/// Expensive remote-access signals that enumerate OS state (TCP port table +
+/// mirror display drivers). Catches TeamViewer/AnyDesk/RustDesk/Parsec that
+/// native RDP checks miss. Cached between slow environment scans by the caller.
+pub fn collect_remote_environment_signals() -> Vec<DetectionSignal> {
+    let mut signals = collect_remote_port_signals();
+    signals.extend(collect_mirror_driver_signals());
     signals
 }
 
@@ -303,6 +430,233 @@ fn filter_process_category(processes: &[ProcessInfo], category: &str) -> Vec<Pro
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// VM / remote-tool detection (Sprint 1.2 / 1.3)
+//
+// The pure classifier functions below are unit-tested; the `collect_*` wrappers
+// pull the raw signals from Windows and are best-effort (any failure yields no
+// signal rather than a hard error).
+// ---------------------------------------------------------------------------
+
+/// Map a CPUID hypervisor-vendor string (leaf 0x40000000) to a product name.
+///
+/// `Microsoft Hv` is intentionally NOT matched: Windows 11 VBS/HVCI sets the
+/// hypervisor-present bit on physical machines too, so trusting it would
+/// false-positive on hardened bare-metal exam machines.
+fn hypervisor_vendor_label(vendor: &str) -> Option<&'static str> {
+    let vendor = vendor.trim_matches(|c: char| c == '\0' || c.is_whitespace());
+    if vendor.contains("VMware") {
+        Some("VMware")
+    } else if vendor.contains("VBox") {
+        Some("VirtualBox")
+    } else if vendor.contains("KVM") {
+        Some("KVM")
+    } else if vendor.contains("XenVMM") {
+        Some("Xen")
+    } else if vendor.contains("prl") {
+        Some("Parallels")
+    } else if vendor.contains("TCG") {
+        Some("QEMU")
+    } else {
+        None
+    }
+}
+
+/// Map the OUI (first three bytes) of a MAC address to a virtualization vendor.
+fn mac_oui_vendor(mac: &[u8]) -> Option<&'static str> {
+    if mac.len() < 3 {
+        return None;
+    }
+    match [mac[0], mac[1], mac[2]] {
+        [0x00, 0x05, 0x69] | [0x00, 0x0C, 0x29] | [0x00, 0x50, 0x56] | [0x00, 0x1C, 0x14] => {
+            Some("VMware")
+        }
+        [0x08, 0x00, 0x27] | [0x0A, 0x00, 0x27] => Some("VirtualBox"),
+        [0x00, 0x16, 0x3E] => Some("Xen"),
+        [0x00, 0x1C, 0x42] => Some("Parallels"),
+        // NOTE: Hyper-V's 00:15:5D and QEMU/KVM's 52:54:00 OUIs are deliberately
+        // NOT matched: the Hyper-V virtual-switch adapter is present on any
+        // physical Windows box running WSL2/Docker/VBS, and 52:54:00 appears on
+        // legitimate hardware — flagging them would false-positive on real exam
+        // machines (consistent with excluding "Microsoft Hv" from the CPUID path).
+        _ => None,
+    }
+}
+
+/// Map a listening/active TCP port to the remote-control product that owns it.
+fn remote_port_label(port: u16) -> Option<&'static str> {
+    match port {
+        7070 => Some("AnyDesk"),
+        5938 => Some("TeamViewer"),
+        21115..=21119 => Some("RustDesk"),
+        _ => None,
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn read_hypervisor_vendor() -> Option<String> {
+    use core::arch::x86_64::__cpuid;
+    // Leaf 1, ECX bit 31 = "hypervisor present".
+    if (__cpuid(1).ecx & (1 << 31)) == 0 {
+        return None;
+    }
+    let leaf = __cpuid(0x4000_0000);
+    let mut bytes = Vec::with_capacity(12);
+    bytes.extend_from_slice(&leaf.ebx.to_le_bytes());
+    bytes.extend_from_slice(&leaf.ecx.to_le_bytes());
+    bytes.extend_from_slice(&leaf.edx.to_le_bytes());
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn read_hypervisor_vendor() -> Option<String> {
+    None
+}
+
+fn collect_hypervisor_signals() -> Vec<DetectionSignal> {
+    match read_hypervisor_vendor().as_deref().and_then(hypervisor_vendor_label) {
+        Some(label) => vec![DetectionSignal {
+            id: "vm-cpuid-hypervisor".to_string(),
+            label: "Hypervisor detected (CPUID)".to_string(),
+            detail: format!("CPUID hypervisor vendor reports {label}."),
+            severity: "warn".to_string(),
+            source: "cpuid".to_string(),
+        }],
+        None => Vec::new(),
+    }
+}
+
+fn collect_mac_vm_signals() -> Vec<DetectionSignal> {
+    let mut signals = Vec::new();
+    unsafe {
+        let flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+        let mut size = 0u32;
+        // First call sizes the buffer (returns ERROR_BUFFER_OVERFLOW).
+        let _ = GetAdaptersAddresses(0, flags, None, None, &mut size);
+        if size == 0 {
+            return signals;
+        }
+        let mut buffer = aligned_byte_buffer(size as usize);
+        let ret = GetAdaptersAddresses(
+            0,
+            flags,
+            None,
+            Some(buffer.as_mut_ptr() as *mut IP_ADAPTER_ADDRESSES_LH),
+            &mut size,
+        );
+        if ret != 0 {
+            return signals;
+        }
+        let mut current = buffer.as_ptr() as *const IP_ADAPTER_ADDRESSES_LH;
+        while !current.is_null() {
+            let adapter = &*current;
+            let len = (adapter.PhysicalAddressLength as usize).min(adapter.PhysicalAddress.len());
+            if len >= 3 {
+                let mac = &adapter.PhysicalAddress[..len];
+                if let Some(vendor) = mac_oui_vendor(mac) {
+                    signals.push(DetectionSignal {
+                        id: "vm-mac-oui".to_string(),
+                        label: "Virtual network adapter".to_string(),
+                        detail: format!(
+                            "{vendor} MAC prefix {:02X}:{:02X}:{:02X} detected.",
+                            mac[0], mac[1], mac[2]
+                        ),
+                        severity: "warn".to_string(),
+                        source: "network".to_string(),
+                    });
+                    break;
+                }
+            }
+            current = adapter.Next;
+        }
+    }
+    signals
+}
+
+fn collect_remote_port_signals() -> Vec<DetectionSignal> {
+    let mut signals = Vec::new();
+    unsafe {
+        let af = 2u32; // AF_INET
+        let mut size = 0u32;
+        let _ = GetExtendedTcpTable(None, &mut size, BOOL(0), af, TCP_TABLE_OWNER_PID_ALL, 0);
+        if size == 0 {
+            return signals;
+        }
+        let mut buffer = aligned_byte_buffer(size as usize);
+        let ret = GetExtendedTcpTable(
+            Some(buffer.as_mut_ptr() as *mut c_void),
+            &mut size,
+            BOOL(0),
+            af,
+            TCP_TABLE_OWNER_PID_ALL,
+            0,
+        );
+        if ret != 0 {
+            return signals;
+        }
+        let table = &*(buffer.as_ptr() as *const MIB_TCPTABLE_OWNER_PID);
+        let count = table.dwNumEntries as usize;
+        let rows = std::slice::from_raw_parts(table.table.as_ptr(), count);
+        let mut seen = std::collections::BTreeSet::new();
+        for row in rows {
+            // dwLocalPort holds the port in network byte order in its low word.
+            let port = u16::from_be(row.dwLocalPort as u16);
+            if let Some(vendor) = remote_port_label(port) {
+                if seen.insert(port) {
+                    signals.push(DetectionSignal {
+                        id: format!("remote-port-{port}"),
+                        label: "Remote-control network port".to_string(),
+                        detail: format!(
+                            "{vendor} network port {port} is open (owning pid {}).",
+                            row.dwOwningPid
+                        ),
+                        severity: "warn".to_string(),
+                        source: "network".to_string(),
+                    });
+                }
+            }
+        }
+    }
+    signals
+}
+
+fn collect_mirror_driver_signals() -> Vec<DetectionSignal> {
+    let mut signals = Vec::new();
+    unsafe {
+        let mut index = 0u32;
+        loop {
+            let mut device = DISPLAY_DEVICEW {
+                cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
+                ..Default::default()
+            };
+            if !EnumDisplayDevicesW(PCWSTR::null(), index, &mut device, 0).as_bool() {
+                break;
+            }
+            if (device.StateFlags & DISPLAY_DEVICE_MIRRORING_DRIVER) != 0 {
+                let name = utf16_to_string(&device.DeviceString);
+                signals.push(DetectionSignal {
+                    id: format!("remote-mirror-{index}"),
+                    label: "Mirror display driver".to_string(),
+                    detail: format!("Mirror display driver active: {name}"),
+                    severity: "warn".to_string(),
+                    source: "driver".to_string(),
+                });
+            }
+            index += 1;
+        }
+    }
+    signals
+}
+
+/// Allocate a zeroed byte buffer that is guaranteed 8-byte aligned, for use when
+/// the raw bytes are later reinterpreted as a Win32 struct (e.g.
+/// `IP_ADAPTER_ADDRESSES_LH`, `MIB_TCPTABLE_OWNER_PID`, `VS_VERSIONINFO`). A plain
+/// `vec![0u8; n]` only guarantees 1-byte alignment, so casting its pointer to an
+/// aligned struct is technically UB. Backing the storage with `u64` fixes that.
+fn aligned_byte_buffer(len: usize) -> Vec<u64> {
+    vec![0u64; len.div_ceil(8).max(1)]
+}
+
 fn read_registry_string(path: &str, value_name: &str) -> Option<String> {
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     let key = hklm.open_subkey(path).ok()?;
@@ -322,4 +676,44 @@ fn utf16_to_string(buffer: &[u16]) -> String {
 
 fn bytes_to_mb(bytes: u64) -> u64 {
     bytes / (1024 * 1024)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{hypervisor_vendor_label, mac_oui_vendor, remote_port_label};
+
+    #[test]
+    fn maps_known_hypervisor_vendors() {
+        assert_eq!(hypervisor_vendor_label("VMwareVMware"), Some("VMware"));
+        assert_eq!(hypervisor_vendor_label("VBoxVBoxVBox"), Some("VirtualBox"));
+        assert_eq!(hypervisor_vendor_label("KVMKVMKVM\0\0\0"), Some("KVM"));
+        assert_eq!(hypervisor_vendor_label("XenVMMXenVMM"), Some("Xen"));
+        assert_eq!(hypervisor_vendor_label("prl hyperv  "), Some("Parallels"));
+        assert_eq!(hypervisor_vendor_label("TCGTCGTCGTCG"), Some("QEMU"));
+        // Microsoft Hyper-V is deliberately NOT flagged (Win11 VBS false-positive guard).
+        assert_eq!(hypervisor_vendor_label("Microsoft Hv"), None);
+        assert_eq!(hypervisor_vendor_label(""), None);
+    }
+
+    #[test]
+    fn maps_known_virtual_mac_ouis() {
+        assert_eq!(mac_oui_vendor(&[0x00, 0x0C, 0x29, 0x11, 0x22, 0x33]), Some("VMware"));
+        assert_eq!(mac_oui_vendor(&[0x08, 0x00, 0x27, 0xaa, 0xbb, 0xcc]), Some("VirtualBox"));
+        assert_eq!(mac_oui_vendor(&[0x00, 0x1C, 0x42, 0x00, 0x00, 0x01]), Some("Parallels"));
+        // Hyper-V (00:15:5D) and QEMU/KVM (52:54:00) are intentionally NOT flagged
+        // to avoid false positives on physical WSL2/Docker/VBS machines.
+        assert_eq!(mac_oui_vendor(&[0x00, 0x15, 0x5D, 0x00, 0x00, 0x01]), None);
+        assert_eq!(mac_oui_vendor(&[0x52, 0x54, 0x00, 0x01, 0x02, 0x03]), None);
+        assert_eq!(mac_oui_vendor(&[0x3c, 0x22, 0xfb, 0x00, 0x00, 0x00]), None); // real vendor OUI
+        assert_eq!(mac_oui_vendor(&[0x00, 0x0C]), None); // too short
+    }
+
+    #[test]
+    fn maps_remote_control_ports() {
+        assert_eq!(remote_port_label(7070), Some("AnyDesk"));
+        assert_eq!(remote_port_label(5938), Some("TeamViewer"));
+        assert_eq!(remote_port_label(21115), Some("RustDesk"));
+        assert_eq!(remote_port_label(21119), Some("RustDesk"));
+        assert_eq!(remote_port_label(443), None);
+    }
 }

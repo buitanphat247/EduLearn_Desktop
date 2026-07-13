@@ -11,10 +11,33 @@ const {
 } = require("./contracts/safe-exam");
 const {
   createAuthenticatedFrame,
+  createSequencedFrameFactory,
   createFrameVerifier,
 } = require("./ipc-auth");
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 3000;
+
+// C1: decide the Electron↔Rust transport. Plain stdio is UNAUTHENTICATED — any
+// process that can write the core's stdin could drive it. Production therefore
+// requires the authenticated named pipe (HMAC + parent-PID bound) and refuses to
+// fall back to stdio. Dev keeps stdio for convenience unless opted in.
+//   - `NODE_ENV=production` or `EDULEARN_REQUIRE_SECURE_IPC=1` → secure required
+//   - `EDULEARN_CORE_IPC_MODE=named-pipe`                      → explicit opt-in
+// Named-pipe auth is Windows-only, so on a non-win32 production host we refuse
+// to launch rather than silently exposing an unauthenticated channel.
+function resolveCoreIpcMode(env = process.env, platform = process.platform) {
+  const requireAuthenticatedIpc =
+    env.NODE_ENV === "production" || env.EDULEARN_REQUIRE_SECURE_IPC === "1";
+  const explicitPipe = env.EDULEARN_CORE_IPC_MODE === "named-pipe";
+  const isWindows = platform === "win32";
+  const useAuthenticatedPipe = isWindows && (explicitPipe || requireAuthenticatedIpc);
+  const refuseUnauthenticatedStdio = requireAuthenticatedIpc && !useAuthenticatedPipe;
+  return {
+    requireAuthenticatedIpc,
+    useAuthenticatedPipe,
+    refuseUnauthenticatedStdio,
+  };
+}
 
 function resolveRustCoreBinaryPath() {
   const configuredPath = process.env.DESKTOP_RUST_CORE_PATH;
@@ -37,10 +60,13 @@ function createRustSidecarTransport({ onEvent, onExit }) {
   let connected = false;
   let binaryPath = null;
   let ipcSecret = null;
+  // P47-01: per-connection IPC v2 frame factory — emits frames carrying a
+  // MONOTONIC sequence bound into the MAC, so the Rust core rejects a
+  // reordered/rolled-back/duplicate frame. Recreated on each (re)connect.
+  let frameFactory = null;
   let verifyResponseFrame = null;
-  const useAuthenticatedPipe =
-    process.platform === "win32" &&
-    process.env.EDULEARN_CORE_IPC_MODE === "named-pipe";
+  const ipcMode = resolveCoreIpcMode();
+  const useAuthenticatedPipe = ipcMode.useAuthenticatedPipe;
   const pendingRequests = new Map();
 
   function cleanupPendingRequests(code, message) {
@@ -227,6 +253,17 @@ function createRustSidecarTransport({ onEvent, onExit }) {
       };
     }
 
+    // C1: never launch the core over unauthenticated stdio in production.
+    if (ipcMode.refuseUnauthenticatedStdio) {
+      return {
+        connected: false,
+        errorCode: CORE_ERROR_CODES.IPC_FAILURE,
+        message:
+          "Refusing to start Rust core over unauthenticated stdio in production. " +
+          "Authenticated named-pipe IPC (Windows) is required — set EDULEARN_CORE_IPC_MODE=named-pipe on a Windows host.",
+      };
+    }
+
     binaryPath = resolveRustCoreBinaryPath();
     if (!binaryPath) {
       return {
@@ -239,9 +276,17 @@ function createRustSidecarTransport({ onEvent, onExit }) {
 
     let childArguments = [];
     const childEnvironment = { ...process.env };
+    // C1 defense-in-depth: tell the spawned core to refuse unauthenticated stdio
+    // whenever secure IPC is required, so even a mis-launched child cannot serve
+    // commands over stdin.
+    if (ipcMode.requireAuthenticatedIpc) {
+      childEnvironment.EDULEARN_REQUIRE_SECURE_IPC = "1";
+    }
     let pipePath = null;
     if (useAuthenticatedPipe) {
       ipcSecret = crypto.randomBytes(32);
+      // P47-01: start a fresh monotonic sequence for this connection's v2 frames.
+      frameFactory = createSequencedFrameFactory({ secret: ipcSecret });
       const pipeName = `edulearn-core-${process.pid}-${crypto.randomBytes(12).toString("hex")}`;
       pipePath = `\\\\.\\pipe\\${pipeName}`;
       childArguments = ["--named-pipe", pipeName];
@@ -334,11 +379,11 @@ function createRustSidecarTransport({ onEvent, onExit }) {
 
       try {
         if (useAuthenticatedPipe) {
-          const frame = createAuthenticatedFrame({
-            kind: "request",
-            payload,
-            secret: ipcSecret,
-          });
+          // P47-01: emit a v2 (sequenced) frame; fall back to v1 only if the
+          // factory is somehow unset (defensive — it is created with the secret).
+          const frame = frameFactory
+            ? frameFactory.create({ kind: "request", payload })
+            : createAuthenticatedFrame({ kind: "request", payload, secret: ipcSecret });
           pipeSocket.write(`${JSON.stringify(frame)}\n`);
         } else {
           child.stdin.write(`${JSON.stringify(payload)}\n`);
@@ -416,4 +461,5 @@ function createRustSidecarTransport({ onEvent, onExit }) {
 module.exports = {
   createRustSidecarTransport,
   resolveRustCoreBinaryPath,
+  resolveCoreIpcMode,
 };
