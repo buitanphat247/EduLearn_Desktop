@@ -1,12 +1,16 @@
 const { ipcMain, shell, app } = require("electron");
-const { DESKTOP_CORE_CHANNELS } = require("./contracts/safe-exam");
+const {
+  DESKTOP_CORE_CHANNELS,
+  isRendererAllowedCommand,
+  MAIN_ONLY_COMMANDS,
+} = require("./contracts/safe-exam");
 const { TRACE_CHANNEL } = require("./exam-guard-trace");
 const {
   enterExamDesktop,
   switchBackToDefaultDesktop,
   allowExamShellClose,
 } = require("./exam-desktop-launcher");
-const { verifyExitPasswordInMain } = require("./exam-exit-verify");
+const { verifyExitPasswordInMain, invalidateExitPasswordCache } = require("./exam-exit-verify");
 const { verifyCapabilityToken } = require("./capability-token");
 
 function registerDesktopOAuthIpc({ getPendingDeepLink, clearPendingDeepLink }) {
@@ -95,6 +99,19 @@ function registerDesktopCoreIpc({ desktopCoreRuntime, examGuardTracer, getMainWi
       if (!isValidCommandRequest(request)) {
         throw new Error("desktop-core IPC rejected: malformed request");
       }
+      // VS-01: reject renderer-originated IPC for privileged main-only commands.
+      // This is defense-in-depth — the command name is already validated as a
+      // known string, but MAIN_ONLY commands must never reach the dispatcher.
+      if (!isRendererAllowedCommand(request.cmd)) {
+        if (MAIN_ONLY_COMMANDS.has(request.cmd)) {
+          throw new Error(
+            `desktop-core IPC rejected: '${request.cmd}' is a privileged main-only command`,
+          );
+        }
+        throw new Error(
+          `desktop-core IPC rejected: '${request.cmd}' is not a recognized command`,
+        );
+      }
       return desktopCoreRuntime.handleCommand(request);
     });
   }
@@ -143,6 +160,10 @@ function registerDesktopCoreIpc({ desktopCoreRuntime, examGuardTracer, getMainWi
         return { applied: false, denied: true, detail: "Mật khẩu thoát không hợp lệ." };
       }
 
+      // VS-02: invalidate the offline exit-password cache after a successful exit
+      // so stale material is never reused (e.g. re-entering the same exam later).
+      invalidateExitPasswordCache(sessionId);
+
       const restore = switchBackToDefaultDesktop();
       // Permit the window/app close now that this is a verified exit.
       allowExamShellClose();
@@ -160,4 +181,6 @@ module.exports = {
   isValidCommandRequest,
   isAuthorizedCoreRequest,
   isSafeExternalUrl,
+  isRendererAllowedCommand,
+  MAIN_ONLY_COMMANDS,
 };

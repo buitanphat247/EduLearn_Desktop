@@ -4,12 +4,25 @@ const {
   RUNTIME_CHANGED_EVENT,
   SESSION_STATES,
   createDesktopRuntimeSnapshot,
+  isRendererAllowedCommand,
 } = require("./contracts/safe-exam");
-const { TRACE_CHANNEL } = require("./exam-guard-trace");
+const { TRACE_CHANNEL } = require("./contracts/trace-channel");
 const {
   readCapabilityTokenFromArgv,
   isExamShellFromArgv,
+  readExamShellIdentityFromArgv,
 } = require("./capability-token");
+
+// VS-04: a sandboxed preload's `process.env` is not reliably exposed, so read env
+// through this guarded helper (works sandboxed and unsandboxed). Identity/token
+// come from argv (additionalArguments), which IS reliably available.
+function readEnv(name) {
+  try {
+    return typeof process !== "undefined" && process.env ? process.env[name] : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 // C3: this launch's capability token, injected by main via `additionalArguments`
 // (visible here in process.argv, but not to the untrusted page). It is attached
@@ -17,10 +30,17 @@ const {
 // verify the call originated from this bundled preload.
 const CAPABILITY_TOKEN = readCapabilityTokenFromArgv(process.argv);
 
-// Exam-shell identity: env flag OR the robust argv marker (defense-in-depth), so
-// a genuine isolated shell is never mis-detected as the trapping in-window mode.
+// Exam-shell identity: the robust argv marker is PRIMARY (reliable under sandbox),
+// with the env flag as a guarded defense-in-depth fallback.
 const IS_ISOLATED_EXAM_SHELL =
-  process.env.EDULEARN_EXAM_SHELL === "1" || isExamShellFromArgv(process.argv);
+  isExamShellFromArgv(process.argv) || readEnv("EDULEARN_EXAM_SHELL") === "1";
+
+// Session id / exam code: argv is authoritative (sandbox-safe), env as fallback.
+const EXAM_SHELL_IDENTITY = readExamShellIdentityFromArgv(process.argv);
+const EXAM_SHELL_SESSION_ID =
+  EXAM_SHELL_IDENTITY.sessionId || readEnv("EDULEARN_EXAM_SHELL_SESSION_ID") || null;
+const EXAM_SHELL_EXAM_CODE =
+  EXAM_SHELL_IDENTITY.examCode || readEnv("EDULEARN_EXAM_SHELL_EXAM_CODE") || null;
 
 // Invoke a main-side desktop-core channel with the capability token prepended.
 function invokeCore(channel, payload) {
@@ -198,6 +218,13 @@ function applyRuntimeSnapshot(snapshot) {
 }
 
 function buildCommandRequest(command) {
+  // VS-01: fail synchronously if the renderer tries to build a request for a
+  // main-only command. Defense-in-depth — the IPC handler also checks this.
+  if (!isRendererAllowedCommand(command?.cmd)) {
+    throw new Error(
+      `desktop-core preload blocked: '${command?.cmd}' is a privileged main-only command`,
+    );
+  }
   commandCounter += 1;
 
   return {
@@ -419,8 +446,8 @@ contextBridge.exposeInMainWorld("desktopExam", {
   // True when this Electron process is the isolated exam-shell (spawned onto a
   // dedicated Windows desktop), so the UI can render the exam room + exit flow.
   isExamShell: IS_ISOLATED_EXAM_SHELL,
-  sessionId: process.env.EDULEARN_EXAM_SHELL_SESSION_ID || null,
-  examCode: process.env.EDULEARN_EXAM_SHELL_EXAM_CODE || null,
+  sessionId: EXAM_SHELL_SESSION_ID,
+  examCode: EXAM_SHELL_EXAM_CODE,
   // Lobby: create the isolated desktop + launch the exam-shell on it.
   enterExamDesktop: (info) =>
     invokeCore(DESKTOP_CORE_CHANNELS.ENTER_EXAM_DESKTOP, {

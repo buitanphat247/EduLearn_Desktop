@@ -4,14 +4,17 @@ version = "0.0.1"
 edition = "2021"
 
 # F-004 / release hardening: strip symbols + LTO shrink the binary and remove
-# names/paths that ease reverse engineering; panic=abort avoids unwind tables and
-# is fine here (no catch_unwind in the tree — the service watchdog restarts the
-# core). Does not affect `cargo test` (test profile inherits dev, keeps unwind).
+# names/paths that ease reverse engineering.
+# VS-12: panic=unwind so catch_unwind at IPC/thread boundaries can degrade
+# gracefully instead of aborting the whole core. The service watchdog restarts
+# the core on any exit code, so abort=quickly-dead vs unwind=caught is a
+# UX/recovery-time tradeoff, not a correctness difference. cargo test (dev profile)
+# inherits dev settings which use unwind by default, so tests are unaffected.
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
-panic = "abort"
+panic = "unwind"
 strip = "symbols"
 
 [dependencies]
@@ -28,4 +31,4 @@ serde_json = "1"
 sha2 = "0.10"
 sysinfo = "0.30"
 winreg = "0.52"
-windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_Security", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_DataExchange", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_Etw", "Win32_System_IO", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_StationsAndDesktops", "Win32_System_Threading", "Win32_System_Time", "Win32_UI_Accessibility", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_DataExchange", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_Etw", "Win32_System_IO", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_StationsAndDesktops", "Win32_System_Threading", "Win32_System_Time", "Win32_UI_Accessibility", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }

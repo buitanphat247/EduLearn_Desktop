@@ -6,10 +6,46 @@ const {
   EXAM_SHELL_LAUNCH_ARG,
   getCapabilityToken,
   capabilityTokenLaunchArg,
+  examShellIdentityLaunchArgs,
   readCapabilityTokenFromArgv,
   isExamShellFromArgv,
+  readExamShellIdentityFromArgv,
   verifyCapabilityToken,
 } = require("../src/capability-token");
+
+test("VS-04: exam-shell identity round-trips through argv (sandbox-safe delivery)", () => {
+  const args = examShellIdentityLaunchArgs("sess-123", "EXAM-9");
+  assert.deepEqual(args, [
+    "--edulearn-exam-session=sess-123",
+    "--edulearn-exam-code=EXAM-9",
+  ]);
+  const parsed = readExamShellIdentityFromArgv([
+    "electron.exe",
+    capabilityTokenLaunchArg(),
+    ...args,
+    "app",
+  ]);
+  assert.equal(parsed.sessionId, "sess-123");
+  assert.equal(parsed.examCode, "EXAM-9");
+});
+
+test("VS-04: identity launch args omit empty values; parser returns nulls when absent", () => {
+  assert.deepEqual(examShellIdentityLaunchArgs(null, "EXAM-9"), [
+    "--edulearn-exam-code=EXAM-9",
+  ]);
+  assert.deepEqual(examShellIdentityLaunchArgs(undefined, undefined), []);
+  const parsed = readExamShellIdentityFromArgv(["electron.exe", "app"]);
+  assert.equal(parsed.sessionId, null);
+  assert.equal(parsed.examCode, null);
+});
+
+test("VS-04: token minting still works after crypto was made a lazy require", () => {
+  const token = getCapabilityToken();
+  assert.equal(typeof token, "string");
+  assert.ok(token.length >= 32);
+  assert.equal(verifyCapabilityToken(token), true);
+  assert.equal(verifyCapabilityToken("wrong"), false);
+});
 
 test("isExamShellFromArgv detects the exam-shell launch marker", () => {
   assert.equal(

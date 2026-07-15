@@ -10,6 +10,7 @@ const {
 } = require("./contracts/safe-exam");
 const { createRustSidecarTransport } = require("./rust-sidecar");
 const { logger } = require("./logger");
+const { cacheExitPasswordHash } = require("./exam-exit-verify");
 const {
   GOVERNOR_EVENT_SCOPES,
   GOVERNOR_LOCK_MODES,
@@ -2069,6 +2070,16 @@ function createDesktopCoreRuntime({
         response.data.protectionStatus,
       );
       applyRuntimeFoundationPatch(nextSnapshotPatch, response.data);
+
+      // VS-02: cache the exit-password hash from the server's session start response
+      // so the exit gate stays closed even if the network is unreachable.
+      const sessionCtx = response.data?.sessionContext;
+      const exitHash = sessionCtx && typeof sessionCtx === "object"
+        ? sessionCtx.exitPasswordHash
+        : undefined;
+      if (exitHash) {
+        cacheExitPasswordHash(sessionCtx.sessionId ?? "", exitHash);
+      }
 
       if (!response.data?.sessionContext?.dryRun && protectionController) {
         const windowHandleHex =

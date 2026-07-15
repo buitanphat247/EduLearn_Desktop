@@ -9,7 +9,8 @@
     "desktop:stable": "node scripts/open-electron.js --no-reload",
     "desktop:protected": "node scripts/open-protected-electron.js",
     "integrity:manifest": "node scripts/generate-integrity-manifest.js --root .",
-    "package": "npm run integrity:manifest && electron-builder --config electron-builder.yml",
+    "build:preload": "esbuild src/preload.js --bundle --platform=node --format=cjs --external:electron --outfile=dist/preload.js",
+    "package": "npm run build:preload && npm run integrity:manifest && electron-builder --config electron-builder.yml",
     "core:build": "cargo build --manifest-path rust-core/Cargo.toml --release",
     "bootstrapper:build": "cargo build --manifest-path bootstrapper/Cargo.toml --release",
     "bootstrapper:test": "cargo test --manifest-path bootstrapper/Cargo.toml",
@@ -36,6 +37,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "bcryptjs": "^2.4.3",
     "electron": "^42.4.0"
   },
   "devDependencies": {
@@ -43,6 +45,7 @@
     "cross-env": "^10.1.0",
     "dotenv": "^17.2.3",
     "electronmon": "^2.0.4",
+    "esbuild": "^0.28.1",
     "wait-on": "^9.0.10"
   },
   "electronmon": {

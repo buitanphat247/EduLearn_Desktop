@@ -63,9 +63,14 @@ function createOverlayManager({ BrowserWindow }) {
       thickFrame: false,
       backgroundColor: "#030712",
       webPreferences: {
-        sandbox: false,
+        // VS-04: these blackout covers have NO preload and load a static data:
+        // page, so they are fully sandbox-compatible — run them sandboxed and
+        // with DevTools disabled (they are non-focusable, non-interactive and
+        // never need debugging). Tightens the exam attack surface at no cost.
+        sandbox: true,
         contextIsolation: true,
         nodeIntegration: false,
+        devTools: false,
       },
     });
 

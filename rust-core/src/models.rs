@@ -256,6 +256,10 @@ pub struct ExamSessionContext {
     pub room_code: Option<String>,
     pub started_at: u64,
     pub dry_run: bool,
+    /// Cached bcrypt hash of the exit password (if configured). The main Electron
+    /// process reads this from the response and persists it for offline verification.
+    #[serde(default)]
+    pub exit_password_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -311,6 +315,12 @@ pub struct StartExamSessionPayload {
     pub exam_key: Option<SignedExamReceipt>,
     #[serde(default)]
     pub service_authorization: Option<SignedExamReceipt>,
+    /// Bcrypt hash of the exam's exit password. When present the desktop main
+    /// process caches it for offline verification so the exit gate stays closed
+    /// even if the API is unreachable. Omit / null when no exit password is
+    /// configured.
+    #[serde(default)]
+    pub exit_password_hash: Option<String>,
     #[serde(default = "default_true")]
     pub dry_run: bool,
 }

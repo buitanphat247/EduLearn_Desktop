@@ -1,5 +1,6 @@
-const { BrowserWindow, screen } = require("electron");
+const { BrowserWindow, screen, app } = require("electron");
 const path = require("path");
+const fs = require("fs");
 const { installUrlFilter } = require("./protection/url-filter");
 const {
   resolveSignedAllowlistFromEnv,
@@ -9,10 +10,29 @@ const { isExamShellCloseAllowed } = require("./exam-desktop-launcher");
 const {
   capabilityTokenLaunchArg,
   EXAM_SHELL_LAUNCH_ARG,
+  examShellIdentityLaunchArgs,
 } = require("./capability-token");
 
 function resolveStartUrl() {
   return process.env.ELECTRON_START_URL || "http://localhost:3000";
+}
+
+// VS-04: prefer the esbuild-BUNDLED preload (a single self-contained file with no
+// local `require()`), which lets the window run with `sandbox:true`. Fall back to
+// the raw src preload with `sandbox:false` when the bundle is absent (e.g. a plain
+// dev run that skipped `npm run build:preload`) so development is never broken. The
+// packaged build always bundles (see the `package` script), so shipped exam-shells
+// are sandboxed.
+function resolvePreload() {
+  const bundled = path.join(__dirname, "..", "dist", "preload.js");
+  try {
+    if (fs.existsSync(bundled)) {
+      return { preloadPath: bundled, sandbox: true };
+    }
+  } catch {
+    /* fall through to the unbundled preload */
+  }
+  return { preloadPath: path.join(__dirname, "preload.js"), sandbox: false };
 }
 
 function createMainWindow() {
@@ -20,6 +40,7 @@ function createMainWindow() {
   // fullscreen window (SEB-style) so there is no black strip / OS chrome; its
   // own bottom control bar (rendered by the room UI) provides reload/exit.
   const isExamShell = process.env.EDULEARN_EXAM_SHELL === "1";
+  const { preloadPath, sandbox } = resolvePreload();
 
   const win = new BrowserWindow({
     width: 1440,
@@ -32,18 +53,27 @@ function createMainWindow() {
     frame: !isExamShell,
     backgroundColor: "#ffffff",
     webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
+      preload: preloadPath,
       contextIsolation: true,
-      // The preload bridge imports local shared contract files and needs the
-      // standard preload environment. Keeping context isolation on is enough
-      // for this stage; sandbox can be revisited after the bridge is bundled.
-      sandbox: false,
+      // VS-04 sandbox: enabled when running the BUNDLED preload (a single
+      // self-contained esbuild output with no local require() and no load-time
+      // Node built-ins — crypto/fs/logger were pruned/lazified, and exam-shell
+      // identity + session/code are delivered via argv, not process.env). The raw
+      // src preload can't be sandboxed (it require()s local files), so it falls
+      // back to sandbox:false for a bundle-less dev run. Packaged builds always
+      // bundle, so shipped exam-shells run sandboxed.
+      sandbox,
       nodeIntegration: false,
       webSecurity: true,
       // Hardening: no <webview> embedding (an injected <webview> would bypass the
       // window's guards) and no in-page spellcheck network calls.
       webviewTag: false,
       spellcheck: false,
+      // VS-04 DevTools lockdown: the packaged exam-shell can NEVER open DevTools
+      // (an exam candidate must not inspect state/tokens/IPC or hide overlays).
+      // Dev and the packaged lobby keep DevTools for debugging. A `devtools-opened`
+      // guard below closes it as defense-in-depth if any path still tries.
+      devTools: !(app.isPackaged && isExamShell),
       // C3: hand this launch's capability token to the preload only. It lands in
       // process.argv (readable by the isolated-world preload, NOT the untrusted
       // page), and the preload attaches it to every privileged desktop-core IPC
@@ -54,8 +84,19 @@ function createMainWindow() {
       // through the same robust argv channel as the token (not only process.env)
       // so a stripped/unpropagated env var can never silently flip a genuine
       // isolated shell into the trapping in-window mode.
+      // VS-04: also deliver session id + exam code via argv (read from env in the
+      // main process, where env IS available) so the sandboxed preload — whose
+      // process.env is unreliable — can still expose window.desktopExam.sessionId
+      // / examCode.
       additionalArguments: isExamShell
-        ? [capabilityTokenLaunchArg(), EXAM_SHELL_LAUNCH_ARG]
+        ? [
+            capabilityTokenLaunchArg(),
+            EXAM_SHELL_LAUNCH_ARG,
+            ...examShellIdentityLaunchArgs(
+              process.env.EDULEARN_EXAM_SHELL_SESSION_ID,
+              process.env.EDULEARN_EXAM_SHELL_EXAM_CODE,
+            ),
+          ]
         : [capabilityTokenLaunchArg()],
       // Dedicated persistent partition so the exam window has its own session:
       // the URL-filter's webRequest hooks are isolated from the process-global
@@ -73,6 +114,19 @@ function createMainWindow() {
   // need to be killed to enter: they are neutralised, not removed.
   if (typeof win.setContentProtection === "function") {
     win.setContentProtection(true);
+  }
+
+  // VS-04 defense-in-depth: even though `devTools:false` is set for the packaged
+  // exam-shell, slam DevTools shut immediately if any future code path / bug
+  // manages to open it. Dev and the packaged lobby are untouched.
+  if (app.isPackaged && isExamShell) {
+    win.webContents.on("devtools-opened", () => {
+      try {
+        win.webContents.closeDevTools();
+      } catch {
+        /* closing DevTools must never break the exam-shell */
+      }
+    });
   }
 
   // Remove the native menu completely so pressing Alt cannot surface the
@@ -110,11 +164,19 @@ function createMainWindow() {
     `[desktop] url-filter mode=${mode} signed-allowlist=${signedAllowlistStatus} allow-list: ${[...allowlist].join(", ")}`,
   );
 
-  // F-006 / hardening: attach a Content-Security-Policy to the exam window's
-  // responses (report-only by default; EDULEARN_CSP=enforce to block). connect-src
-  // is widened to the same hosts the URL-filter allows so the API keeps working.
-  const csp = installCsp(win, { connectHosts: [...allowlist] });
-  console.log(`[desktop] CSP mode=${csp.mode} (${csp.headerName})`);
+  // VS-03 / F-006: attach a Content-Security-Policy to the exam window's
+  // responses. A PACKAGED exam-shell ALWAYS enforces (a missing/relaxed
+  // EDULEARN_CSP can never downgrade it to report-only) and drops 'unsafe-eval';
+  // dev/lobby stays report-only unless EDULEARN_CSP=enforce. connect-src is
+  // widened to the same hosts the URL-filter allows so the API/WSS keeps working.
+  const csp = installCsp(win, {
+    connectHosts: [...allowlist],
+    packaged: app.isPackaged,
+    examShell: isExamShell,
+  });
+  console.log(
+    `[desktop] CSP mode=${csp.mode} (${csp.headerName}) packaged=${csp.packaged} examShell=${isExamShell}`,
+  );
 
   // Surface the URL-filter telemetry periodically so blocks are observable
   // (structured counts, not just per-event console lines).

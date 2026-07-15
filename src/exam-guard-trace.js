@@ -3,8 +3,9 @@
 const fs = require("fs");
 const path = require("path");
 const { logger, resolveLoggerBaseDir } = require("./logger");
-
-const TRACE_CHANNEL = "exam-guard:trace";
+// VS-04: single source of truth for the channel name lives in a dependency-free
+// module so the sandboxed preload can import it without this file's fs/logger graph.
+const { TRACE_CHANNEL } = require("./contracts/trace-channel");
 const MAX_HISTORY = 10;
 const RELOAD_LOOP_WINDOW_MS = 10_000;
 const RELOAD_LOOP_THRESHOLD = 3;

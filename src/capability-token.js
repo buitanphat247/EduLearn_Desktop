@@ -1,6 +1,9 @@
 "use strict";
 
-const crypto = require("crypto");
+// VS-04: `crypto` is required LAZILY (inside the two functions that use it) so
+// this module can be bundled into a SANDBOXED preload without a load-time
+// `require("crypto")` — the sandboxed preload only ever calls the argv parsers
+// below (which need no Node built-ins); token minting/verification runs in main.
 
 // C3 fix — per-launch renderer→main capability token.
 //
@@ -29,10 +32,18 @@ const CAPABILITY_TOKEN_ARG_PREFIX = "--edulearn-cap-token=";
 // the trapping in-window mode just because an env var failed to propagate.
 const EXAM_SHELL_LAUNCH_ARG = "--edulearn-exam-shell=1";
 
+// VS-04: deliver the exam-shell session id / exam code to the (sandboxed) preload
+// via argv too, since a sandboxed preload's `process.env` is not reliably exposed.
+const EXAM_SESSION_ARG_PREFIX = "--edulearn-exam-session=";
+const EXAM_CODE_ARG_PREFIX = "--edulearn-exam-code=";
+
 let cachedToken = null;
 
 function getCapabilityToken() {
   if (!cachedToken) {
+    // Lazy require (see top-of-file note): keeps `crypto` out of the sandboxed
+    // preload bundle's load-time graph. Only ever runs in the main process.
+    const crypto = require("crypto");
     cachedToken = crypto.randomBytes(32).toString("hex");
   }
   return cachedToken;
@@ -63,6 +74,38 @@ function isExamShellFromArgv(argv) {
   return args.includes(EXAM_SHELL_LAUNCH_ARG);
 }
 
+// Main-side: the argv entries that carry the exam-shell session id + exam code to
+// the preload (empty values are omitted). Spread into `additionalArguments`.
+function examShellIdentityLaunchArgs(sessionId, examCode) {
+  const args = [];
+  if (sessionId) {
+    args.push(`${EXAM_SESSION_ARG_PREFIX}${sessionId}`);
+  }
+  if (examCode) {
+    args.push(`${EXAM_CODE_ARG_PREFIX}${examCode}`);
+  }
+  return args;
+}
+
+// Preload-side: read the exam-shell session id + exam code out of argv. Returns
+// nulls when absent. Crypto-free so it is safe in a sandboxed preload.
+function readExamShellIdentityFromArgv(argv) {
+  const args = Array.isArray(argv) ? argv : [];
+  let sessionId = null;
+  let examCode = null;
+  for (const entry of args) {
+    if (typeof entry !== "string") {
+      continue;
+    }
+    if (entry.startsWith(EXAM_SESSION_ARG_PREFIX)) {
+      sessionId = entry.slice(EXAM_SESSION_ARG_PREFIX.length) || null;
+    } else if (entry.startsWith(EXAM_CODE_ARG_PREFIX)) {
+      examCode = entry.slice(EXAM_CODE_ARG_PREFIX.length) || null;
+    }
+  }
+  return { sessionId, examCode };
+}
+
 // Constant-time comparison of a candidate token against this process's token.
 // Never throws on malformed input — just returns false.
 function verifyCapabilityToken(candidate) {
@@ -76,6 +119,8 @@ function verifyCapabilityToken(candidate) {
     return false;
   }
   try {
+    // Lazy require: keeps `crypto` out of the sandboxed preload's load-time graph.
+    const crypto = require("crypto");
     return crypto.timingSafeEqual(a, b);
   } catch {
     return false;
@@ -85,9 +130,13 @@ function verifyCapabilityToken(candidate) {
 module.exports = {
   CAPABILITY_TOKEN_ARG_PREFIX,
   EXAM_SHELL_LAUNCH_ARG,
+  EXAM_SESSION_ARG_PREFIX,
+  EXAM_CODE_ARG_PREFIX,
   getCapabilityToken,
   capabilityTokenLaunchArg,
+  examShellIdentityLaunchArgs,
   readCapabilityTokenFromArgv,
   isExamShellFromArgv,
+  readExamShellIdentityFromArgv,
   verifyCapabilityToken,
 };

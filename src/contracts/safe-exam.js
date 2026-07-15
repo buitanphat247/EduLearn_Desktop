@@ -63,10 +63,16 @@ const SESSION_STATES = {
   ERROR: "ERROR",
 };
 
-const SAFE_EXAM_COMMANDS = new Set([
+// VS-01: split into two sets so the IPC handler can reject privileged commands
+// that originated from the renderer. Commands not in RENDERER_ALLOWED are
+// MAIN_ONLY and MUST NOT be dispatched over the desktop-core:request IPC channel.
+// Trusted main-process callers bypass the IPC path entirely (e.g. globalShortcut
+// calls handleCommand() directly) so they are unaffected.
+
+// Commands the renderer MAY invoke through desktop-core:request.
+const RENDERER_ALLOWED_COMMANDS = new Set([
   "ping",
   "get_core_version",
-  "shutdown",
   "get_system_info",
   "get_display_info",
   "get_process_list",
@@ -82,12 +88,7 @@ const SAFE_EXAM_COMMANDS = new Set([
   "begin_exam_exit_confirmation",
   "cancel_exam_exit_confirmation",
   "exit_exam_session",
-  "force_restore_desktop",
   "request_emergency_restore",
-  "create_exam_desktop",
-  "switch_default_desktop",
-  "activate_input_lockdown",
-  "deactivate_input_lockdown",
   "sync_display_topology",
   "run_runtime_monitor_tick",
   "get_protection_status",
@@ -104,7 +105,6 @@ const SAFE_EXAM_COMMANDS = new Set([
   "check_debugger",
   "scan_process_heuristics",
   "compatibility_check",
-  "verify_config",
   "load_policy",
   "check_environment",
   "start_exam",
@@ -119,6 +119,26 @@ const SAFE_EXAM_COMMANDS = new Set([
   "create_recovery_snapshot",
   "restore_session",
   "check_update",
+  "force_restore_desktop",
+  "verify_config",
+]);
+
+// Commands the renderer MUST NOT invoke through desktop-core:request.
+// Main-process callers (globalShortcut, internal logic) invoke handleCommand
+// directly and are unaffected. These are privileged system operations.
+const MAIN_ONLY_COMMANDS = new Set([
+  "shutdown",
+  "create_exam_desktop",
+  "switch_default_desktop",
+  "activate_input_lockdown",
+  "deactivate_input_lockdown",
+]);
+
+// Legacy alias — still exported for backward compat callers that only need
+// to know whether a command is permitted at all (not who is calling).
+const SAFE_EXAM_COMMANDS = new Set([
+  ...RENDERER_ALLOWED_COMMANDS,
+  ...MAIN_ONLY_COMMANDS,
 ]);
 
 function normalizeNumber(value, fallback) {
@@ -481,14 +501,30 @@ function isSafeExamCommand(value) {
   return typeof value === "string" && SAFE_EXAM_COMMANDS.has(value);
 }
 
+// VS-01: true when the renderer is permitted to invoke this command via
+// the desktop-core:request IPC channel.
+function isRendererAllowedCommand(value) {
+  return typeof value === "string" && RENDERER_ALLOWED_COMMANDS.has(value);
+}
+
+// VS-01: true when this command is privileged and must NEVER be dispatched
+// over the renderer→main IPC channel. Only main-process callers may invoke it.
+function isMainOnlyCommand(value) {
+  return typeof value === "string" && MAIN_ONLY_COMMANDS.has(value);
+}
+
 module.exports = {
   CORE_ERROR_CODES,
   DESKTOP_CORE_CHANNELS,
   RUNTIME_CHANGED_EVENT,
   SAFE_EXAM_COMMANDS,
+  RENDERER_ALLOWED_COMMANDS,
+  MAIN_ONLY_COMMANDS,
   SESSION_STATES,
   createCoreErrorResponse,
   createCoreSuccessResponse,
   createDesktopRuntimeSnapshot,
   isSafeExamCommand,
+  isRendererAllowedCommand,
+  isMainOnlyCommand,
 };

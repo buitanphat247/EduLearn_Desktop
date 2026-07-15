@@ -123,6 +123,7 @@ pub fn build_start_exam_session_result(
         room_code: payload.room_code,
         started_at: now_ms,
         dry_run: payload.dry_run,
+        exit_password_hash: payload.exit_password_hash.clone(),
     };
 
     let protection_status = ProtectionStatus {
@@ -300,6 +301,7 @@ mod tests {
             window_handle_hex: None,
             exam_key: None,
             service_authorization: None,
+            exit_password_hash: None,
             dry_run,
         }
     }
